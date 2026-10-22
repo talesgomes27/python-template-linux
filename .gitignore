@@ -1,0 +1,37 @@
+# Ambientes virtuais
+.venv/
+env/
+venv/
+ENV/
+
+# Bytecode e caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Caches de ferramentas de qualidade
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Cobertura de testes e relatórios
+.coverage
+htmlcov/
+.coverage.*
+
+# Distribuição e builds
+dist/
+build/
+*.egg-info/
+
+# Variáveis de ambiente locais
+.env
+.env.*
+!.env.example
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
