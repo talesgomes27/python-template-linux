@@ -97,13 +97,17 @@ uv lock --upgrade
 
 ```text
 python-template-linux/
-├── .github/workflows/ci.yml   # Esteira de CI testando Python 3.11, 3.12 e 3.13
-├── docs/                      # Documentação técnica e ADRs de arquitetura
-├── src/python_template_linux/ # Código fonte (src-layout)
-├── tests/                     # Testes unitários com pytest
-├── .gitignore                 # Filtro de arquivos efêmeros
-├── .python-version            # Versão ativa do interpretador (ex: 3.12)
-├── AGENTS.md                  # Regras operacionais para agentes e LLMs
-├── pyproject.toml             # Metadados e configurações (Ruff, Pytest)
+├── .github/workflows/ci.yml       # Esteira de CI testando Python 3.11, 3.12 e 3.13
+├── docs/                          # Documentação técnica e ADRs de arquitetura
+│   └── migration-recipe-for-agents.md # Receita detalhada para migração de repositórios legados
+├── scripts/
+│   └── init_project.sh            # Script utilitário pyinit para novos projetos
+├── src/python_template_linux/     # Código fonte (src-layout)
+├── tests/                         # Testes unitários com pytest
+├── .gitignore                     # Filtro de arquivos efêmeros
+├── .python-version                # Versão ativa do interpretador (ex: 3.12)
+├── AGENTS.md                      # Regras operacionais para agentes e LLMs
+├── MIGRATION_RECIPE_FOR_AGENTS.md # Atalho para o playbook de migração para IAs
+├── pyproject.toml                 # Metadados e configurações (Ruff, Pytest)
 └── README.md
 ```
