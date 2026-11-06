@@ -1,5 +1,81 @@
 # Validação do gerador
 
+## Correção F1 — arquétipo ds e grupo notebook — 2026-11-06
+
+Candidata isolada sobre `54458190e7f70c71a3c2a509f1cae4a709e258a9`, sem
+aplicação ao checkout. Somente `scripts/init_project.sh`,
+`tests/test_init_project.py`, `README.md` e este registro mudam. As guardas
+A1–A6/A2-LF-01, a seleção de Python e a composição Ruff/pytest são mantidas.
+O pré-requisito `/usr/bin/python3` >=3.11 continua igual.
+
+`--archetype ds` passa a executar, pelo `creation_uv` existente:
+
+```bash
+uv add --python "$PYTHON_DEFAULT" --group notebook jupyterlab
+```
+
+Polars/DuckDB/PyArrow continuam nas dependências do projeto; ipykernel
+continua no grupo `dev`. Os outros três arquétipos não recebem o grupo
+`notebook`. Nenhum novo atalho, modo ou argumento posicional foi criado.
+O comando compatível com o corpo atual do `jlab` do Data Lab é
+`uv run --locked --group notebook jupyter lab`.
+O sync final padrão não seleciona `notebook`; a inicialização com esse grupo
+pode sincronizar a `.venv` e baixar dependências. O gerador não inicia servidor
+ou navegador, nem instala JupyterLab globalmente.
+
+Evidências locais atuais, com HOME/XDG/cache/TMPDIR temporários e uv offline:
+
+- A base congelada passou **239 testes em 25,57 s**.
+- As sete regressões novas cobrem os quatro arquétipos, encaminhamento de
+  `--python`, preservação da stack anterior, grupo novo, grupo existente com
+  inclusão de outro grupo e falha de resolução sem mensagem de sucesso.
+  Antes da mudança no gerador, três casos falharam e quatro passaram:
+  faltavam a chamada de adição e o grupo novo, e o pacote ausente não era
+  sequer resolvido. Após a correção, os sete passaram.
+- Nas integrações novas, `init` (quando necessário), `pin`,
+  `add --group notebook` e `sync` são delegados ao uv real; a falha no pacote
+  ausente interrompe antes do sync. A instalação de runtime e os demais `add` são
+  simulados. O `sync` usa `--no-install-project`; no caso novo, o pacote gerado
+  é instalado em modo editável na `.venv` temporária. Uma wheel artificial
+  local chamada `jupyterlab` fornece o entry point `jupyter`, que apenas verifica
+  `lab --version` e imprime uma sentinela. Isso verifica a composição do grupo,
+  o lock, a seleção e o encaminhamento do comando; não verifica JupyterLab real.
+  Os dois casos de sucesso executam `uv run --locked --group notebook jupyter
+  lab --version` sem mudar bytes do manifesto ou do lock. O terceiro, sem
+  wheel disponível, falha no novo `add` e não anuncia sucesso.
+- Uma verificação adicional executou o corpo exato de `jlab` lido de
+  `dotfiles/dot_config/devshell/env.sh` do Data Lab em Bash temporário, com
+  `jlab --version`, uv real e o mesmo entry point artificial. Passou sem mudar
+  manifesto/lock. Isso não carrega o devshell completo nem valida a troca de
+  ambiente no terminal do usuário.
+- A suíte completa da candidata passou **246 testes em 27,26 s**, sem skips,
+  falhas ou avisos, incluindo as sete integrações de migração com as
+  pré-condições originais de CPython gerenciado.
+- Passaram Ruff check e format (20 arquivos Python), ShellCheck, shfmt,
+  `bash -n` e ajuda. Após quebrar somente duas strings longas da fixture em
+  literais adjacentes, Ruff foi conferido novamente e as sete regressões foram
+  repetidas; o conteúdo do wrapper gerado não mudou.
+
+Ferramentas: CPython 3.12.15 gerenciado, pytest 9.1.1, uv 0.13.5 e Ruff
+0.17.1. O parser do gerador usou `/usr/bin/python3` 3.14.4. O ambiente de
+desenvolvimento foi copiado, sem instalação de ferramentas ou download de
+interpretadores. As wheels de teste são artificiais e locais; nenhuma
+instalação completa da stack científica ou do JupyterLab real foi realizada.
+Não foram executados CI da candidata, containers, servidor, navegador ou
+notebook real. A CI e os resultados de A1–A6 registrados anteriormente são
+históricos e não validam remotamente os novos bytes F1.
+
+O patch incremental é conferido por reaplicação apenas em cópia da base,
+comparando os 26 arquivos por bytes, tipo e bit executável. A candidata
+preserva os modos POSIX dos arquivos originais; o patch Git transporta somente
+o bit executável, sem garantir os demais metadados POSIX.
+
+O checkout original, o `.envrc` pessoal e os demais arquivos não rastreados
+são preservados e não fazem parte da candidata. Não houve stage, commit,
+push, instalação de `pyinit`, atualização de submódulo, manifesto ou lançadores
+do Data Lab. A versão instalada e a consumida pelo Data Lab continuam
+anteriores. F2, R1 e demais melhorias permanecem fora deste recorte.
+
 ## Correção A6 — inferência do alvo Ruff — 2026-11-06
 
 Candidata isolada sobre `c875362eca362ac0b97964e174bdaee1798a40dc`, sem

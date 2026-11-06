@@ -316,6 +316,33 @@ usuário. Depois dessa instalação aprovada, também é possível executar:
 pyinit meu-projeto --archetype ds
 ```
 
+O arquétipo `ds` deste gerador mantém Polars, DuckDB e PyArrow nas dependências
+do projeto e ipykernel no grupo `dev`. JupyterLab é declarado no grupo
+`notebook` de `[dependency-groups]`, pelo
+[`uv add --group`](https://docs.astral.sh/uv/concepts/projects/dependencies/#dependency-groups).
+Os arquétipos `universal`, `api` e `cli` não recebem esse grupo.
+
+Para iniciar JupyterLab no projeto criado:
+
+```bash
+cd meu-projeto
+uv run --locked --group notebook jupyter lab
+# Com o atalho python-tools do Data Lab disponível, o equivalente é:
+jlab
+```
+
+O grupo `notebook` deve ser selecionado explicitamente: o `uv sync` final
+padrão não o inclui. O comando de inicialização pode sincronizar a `.venv`
+local e baixar dependências; `--locked` exige um lock atualizado. JupyterLab
+pode abrir o navegador; use `jlab --no-browser` ou acrescente `--no-browser`
+ao comando completo para evitar isso. Veja a
+[documentação do JupyterLab](https://jupyterlab.readthedocs.io/en/stable/getting_started/starting.html).
+O gerador apenas prepara o projeto; não inicia servidor ou navegador nem
+instala JupyterLab globalmente. Projetos anteriores precisam de preparo
+explícito (`uv add --group notebook jupyterlab`); esta mudança não os atualiza.
+O `pyinit` distribuído pelo Data Lab só recebe a mudança após atualização
+aprovada de sua versão fixada e do instalador.
+
 ## Migrar um projeto legado
 
 O modo `--migrate` reconhece requirements/pip-tools, Conda, Poetry, Pipenv,
