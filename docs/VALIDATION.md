@@ -98,6 +98,196 @@ posteriores por buffering de stdin. Essa correção é necessária para orquestr
 confirmações por pipe e tem regressão Bats no Data Lab Dotfiles. EOF após `s`
 sem Enter também é recusado, com regressão específica.
 
+## Correção A1 — preservação das configurações na criação — 2026-11-06
+
+Candidata local baseada em `288a183022121526ce98d8fbd94ace14b518d28e`, em cópia
+isolada, sem atualizar o submódulo, manifesto ou `pyinit` instalado no Data Lab.
+A mudança limita-se a `.vscode/settings.json`, `.Renviron`, `.Rprofile`, à
+validação de `.vscode` e às mensagens correspondentes da criação.
+
+A suíte inicial de 125 testes passou. Antes da implementação, 25 casos novos
+falharam contra o gerador anterior, confirmando sobrescrita, links atravessados,
+chamadas uv anteriores ao bloqueio e ausência de recusa de conflitos tardios.
+Os casos FIFO foram executados somente depois da correção, para evitar bloquear
+a versão anterior ao abrir um pipe para escrita.
+
+Na revisão independente, duas reproduções adicionais expuseram falta de busca
+em diretórios e um symlink para FIFO surgido após a revalidação: `noclobber` do
+Bash não recusa todos os tipos. As regressões foram observadas falhando antes
+de corrigir esses casos e de adotar publicação exclusiva com `ln -T`.
+
+Os novos testes usam uv simulado com registro de chamadas, HOME/XDG/cache
+temporários e arquivos externos artificiais. Cobrem o diretório padrão, caminhos
+com espaços, conteúdo padrão, preservação de bytes/modos/inodes e renv,
+reexecução, vizinhos em `.vscode`, symlinks válidos/pendentes, hardlinks,
+diretórios, FIFOs, diretórios sem busca e conflitos em `.vscode`. A recusa inicial
+confere também que nenhuma chamada uv ocorreu e que os tipos, vínculos e conteúdos
+permanecem intactos. Casos determinísticos fazem arquivos ou um symlink `.vscode` surgir
+durante uv; outro faz um arquivo surgir entre a revalidação e a abertura de
+escrita, incluindo symlink para FIFO externo com leitor não bloqueante,
+exercitando a criação exclusiva sem escrever no alvo externo. Falha artificial
+ao produzir conteúdo confirma ausência de publicação parcial e limpeza.
+Nos testes de diretórios sem busca, os modos permanecem intactos durante as
+asserções; somente o teardown os restaura para permitir a limpeza da fixture.
+
+Passaram Ruff check/format, os 157 testes pytest (32 novos casos A1), ShellCheck,
+shfmt em conferência, ajuda do gerador e `git diff --check`. O pytest final não
+teve skips nem avisos. A suíte completa mantém os cenários de manutenção e
+migração, incluindo suas integrações uv reais offline já existentes; os novos
+casos A1 não executam uv real. Foi usada cópia do ambiente de desenvolvimento,
+com Python 3.12.15 e uv 0.13.5, HOME/XDG/cache/TMPDIR temporários e
+`uv run --no-sync --offline`, sem baixar dependências. A revisão independente
+repetiu cinco casos focados e confirmou a recusa sem chamadas uv; após os
+ajustes, não encontrou novos bloqueios no diff A1.
+
+O preflight não grava estado. Arquivos regulares de vínculo único são mantidos;
+novos conteúdos são preparados em temporários privados no mesmo diretório e
+publicados com `ln -T` sem force, após revalidação. O destino final nunca é aberto
+para escrita. A gravação em `.vscode` ocorre por seu diretório físico.
+Essas guardas não constituem transação nem sandbox
+contra processos com escrita concorrente: mudanças tardias podem interromper o
+fluxo depois de etapas uv, e renomeações posteriores à última conferência ficam
+fora da garantia.
+
+A2–A6, R1, integração ds/jlab e ampliação de project doctor permanecem pendentes
+e fora desta candidata. A criação inteira não deve ser declarada segura com
+base nesta correção. Não houve instalação na HOME real, autorização direnv real,
+stage, commit, push, PR ou alteração de projetos reais nesta validação.
+
+## Candidata A2/A3 sobre A1 — 2026-11-06
+
+A base desta etapa é a fotografia dos 26 arquivos rastreados do checkout em
+`288a183022121526ce98d8fbd94ace14b518d28e`, incluindo o diff A1 aprovado e
+aplicado sem commit. O `.envrc` pessoal não integra a fotografia nem a candidata.
+As comparações iniciais confirmaram igualdade de bytes/tipos; o manifesto da
+base registra hashes dos arquivos rastreados. A suíte inicial desta execução
+passou os 157 testes, antes das mudanças A2/A3.
+
+A3 normaliza o executável uv para caminho absoluto antes de `cd`; o resolver
+compartilhado também tem regressão na manutenção. O migrador já fazia essa
+normalização e não foi alterado. Os testes exercitam override relativo,
+PATH relativo, vazio e `.`, espaços no caminho, executável absoluto, fallback,
+ausência e propagação de falhas. Não há garantia nova de integridade imutável
+do executável. A resolução relativa de direnv na manutenção é uma questão
+separada identificada nesta revisão, sem mudança nesta etapa.
+
+A2 restringe todas as chamadas uv da criação ao projeto e à `.venv` local,
+limpando somente os overrides de localização/ativação pertinentes nas chamadas
+filhas. Cache e instalação explícita de runtime continuam podendo usar os
+diretórios do usuário. O uv falso registra executável, argumentos, diretório e
+um conjunto limitado de variáveis artificiais; sentinelas e snapshots cobrem
+também as operações intermediárias, manifests/locks/ambientes externos e pais.
+A recusa de qualquer `pyproject.toml` ancestral é intencionalmente conservadora,
+inclusive para pais sem workspace; não tenta interpretar TOML em Bash.
+
+A revisão independente confirmou uma lacuna inicial em `include/site`: uma
+wheel artificial de headers fez o sync uv real gravar fora da `.venv`. A
+reprodução foi repetida antes da correção; novas regressões também falharam
+para links internos de headers e de pacote. A guarda agora percorre a árvore
+existente sem seguir aliases, recusa links que escapam do ambiente e mantém
+os links dos interpretadores e os aliases internos. A reprodução real passou
+a ser recusada antes das operações, com retorno 2, sem mensagem de sucesso
+ou novos arquivos no destino externo. O resultado não representa sandbox
+contra renomeações concorrentes ou código autorizado de builds.
+
+O teste offline com uv real usa `init`, `python pin` e `sync` reais, com cache e
+HOME descartáveis e sem dependências. Apenas `python install` e `add` são
+simulados; o sync recebe `--no-install-project` e `--no-python-downloads` para
+não instalar o pacote local nem baixar runtime/build backend. Todos os
+overrides externos são combinados nessa execução, e as sentinelas externas
+permanecem intactas. Não é evidência de download completo dos arquétipos.
+O caminho pai contém espaços; o basename desse projeto real é um nome de
+pacote válido. Basenames com espaços continuam sujeitos à recusa de `uv init
+--name`, uma limitação anterior que não foi corrigida aqui.
+
+Foram consultados a [CLI oficial do uv](https://docs.astral.sh/uv/reference/cli/),
+as [variáveis de ambiente](https://docs.astral.sh/uv/configuration/environment/)
+e a [fonte da CLI em 0.9.0](https://github.com/astral-sh/uv/blob/0.9.0/crates/uv-cli/src/lib.rs).
+O `--no-workspace` de init e `--no-project` de pin existem nessa referência;
+as opções de Python de add/sync também foram conferidas na ajuda instalada.
+A execução real usa uv 0.13.5; não foi executado um binário uv 0.9.0.
+
+Na execução final passaram Ruff check/format, os 191 testes pytest, ShellCheck,
+shfmt em conferência e a ajuda do gerador. O runner de testes usou Python
+3.12.15 com HOME/XDG/cache/TMPDIR temporários e `uv run --no-sync --offline`;
+não houve skips. A revisão independente repetiu a suíte de 191 testes e a
+reprodução de headers corrigida, além de verificar aliases internos e links
+de interpretadores, e aprovou o código sem novos bloqueios confirmados.
+Os testes novos de arquivos usam dados artificiais; nada lê ou autoriza o
+`.envrc` pessoal. Matriz de containers, CI e instalações limpas completas não
+foram executados nesta etapa.
+
+Os contratos e o registro A1 permanecem preservados. A4–A6, R1, ds/jlab e
+project doctor não integram esta candidata. Não houve alteração do checkout
+original, `.envrc`, submódulo, manifesto, lançadores ou instalação do usuário.
+O patch desta etapa deve ser aplicado sobre a fotografia com A1; o diff
+acumulado contra HEAD inclui A1 e é um artefato distinto.
+
+## Ajuste A2-LF-01 — 2026-11-06
+
+Nova candidata derivada da A2/A3 anterior, sem sobrescrevê-la nem alterar a
+fotografia A1 ou o checkout original. A revisão independente encontrou perda
+de LFs finais nas capturas de `realpath` e `pwd -P`: ambas reduziam `project`
+com LF real ao nome da pasta irmã, permitindo que a comparação aprovasse um
+`UV_PROJECT_ENVIRONMENT` externo. O erro posterior da conferência IDE não
+desfazia as escritas já concluídas.
+
+A correção preserva a saída com sentinela e confere o status dos dois produtores.
+Remove somente o delimitador emitido pelo comando; destinos físicos terminados
+em LF são explicitamente recusados antes das chamadas uv mutáveis. A comparação
+após `cd` também preserva os bytes. A política cobre caminhos absolutos,
+relativos, múltiplos LFs finais, `.` e symlinks para o destino físico. Não
+normaliza nomes nem amplia o suporte a nomes de pacote de `uv init`.
+
+Antes da mudança, cinco regressões falharam por detectar `.venv`/marcadores na
+pasta irmã, e outra demonstrou que uma saída válida de `pwd` com status de falha
+era aceita. Casos comuns/com espaços e a falha de `realpath` já passavam.
+Depois do ajuste, os nove casos passaram. A comparação das árvores artificiais
+inclui bytes, tipos, inodes, modos e vínculos; o teste não usa apenas o retorno
+de erro. A recusa também exige ausência de chamadas uv. O uv falso registra
+somente o conjunto seletivo de variáveis já adotado pela suíte.
+
+O harness do relatório foi repetido com uv 0.13.5 real offline, CPython gerenciado
+já disponível e três wheels artificiais locais. Na candidata anterior, pin e
+add foram reais, somente python install foi simulado; init não era necessário
+e sync não foi alcançado. O gerador retornou 2, mas criou `.venv` na pasta irmã
+e 47 caminhos externos novos, preservando apenas a sentinela original.
+Na nova candidata, o gerador retorna 2 antes de qualquer chamada uv pelo script:
+zero caminhos externos novos, nenhuma `.venv` na irmã e árvore externa idêntica.
+O harness adaptado aceita registro de chamadas ausente e inclui vínculos nas
+comparações; o relatório de origem não foi alterado.
+
+Os resultados anteriores de 191 testes do autor e 184 aprovados mais sete
+dependentes de CPython gerenciado na revisão externa são históricos. Esta
+validação utiliza o ambiente do projeto com Python 3.12.15 gerenciado por uv,
+sem remover a pré-condição dos sete testes de integração. Não houve download
+de runtime, mudança de permissões do host ou instalação de ferramentas globais.
+
+Nesta execução, a cópia congelada da candidata anterior passou 191 testes.
+A nova passou 200 testes, sem skips ou avisos, incluindo os nove casos novos e
+as integrações de migração com suas pré-condições originais. Também passaram
+Ruff check/format, `bash -n`, ShellCheck, shfmt em conferência e ajuda. A
+verificação de whitespace e a aplicação dos três patches usam cópias distintas
+das respectivas bases; os resultados são conferidos por bytes, tipos e bit
+executável. Patches Git não transportam UID/GID, inodes, timestamps, ACLs ou
+todos os bits POSIX (por exemplo, escrita de grupo); não se afirma restauração
+integral desses metadados pelo patch.
+
+A revisão independente aprovou A2-LF-01, repetiu os 200 testes, os nove casos
+focados e o harness real offline. Também conferiu alvo LF inexistente, alias
+textual com LF para destino físico comum, LF intermediário e `pwd` emitindo LF
+adicional com status zero. Não encontrou bloqueio nesta correção; isso não
+constitui aprovação dos demais achados ou da distribuição instalada.
+
+Não foram executados containers, CI, instalações completas de arquétipos ou o
+binário uv 0.9.0. Mantêm-se os limites documentados de concorrência e de builds
+autorizados; a evidência nova trata somente a perda de LF no caminho.
+
+Os contratos A1/A3, isolamento A2, preservação de `.envrc`, guarda de pais e
+inspeção de links da `.venv` permanecem. Os demais achados e funcionalidades
+continuam fora do escopo. Os novos patches distinguem o ajuste sobre a candidata
+anterior, A2/A3 corrigida sobre a mesma A1 e o acumulado sobre `288a183`.
+
 ## Reproduzir os checks locais
 
 ```bash

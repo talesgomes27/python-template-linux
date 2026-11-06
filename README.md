@@ -58,7 +58,8 @@ uv run ruff format .
 
 ## Criar um novo projeto pelo gerador
 
-Na raiz deste template, execute com Bash e uv instalados:
+Na raiz deste template, execute com Bash, uv e os utilitários básicos Linux
+(incluindo `stat -c %h`, `mktemp`, `ln -T` e `realpath -m`, do coreutils) disponíveis:
 
 ```bash
 bash scripts/init_project.sh ../meu-projeto --python 3.12
@@ -75,7 +76,76 @@ gravável por grupo/outros, como `775`, a integração do Data Lab Dotfiles aind
 poderá recusá-lo. Revise somente os caminhos apontados pela guarda antes de
 alterar suas permissões.
 
-Depois da sincronização, o gerador cria `.envrc` com:
+Antes de criar diretórios ou chamar uv para instalar/fixar Python, inicializar,
+adicionar dependências ou sincronizar, o gerador inspeciona
+`.vscode/settings.json`, `.Renviron`, `.Rprofile` e o diretório `.vscode`:
+
+- Arquivos regulares com um único vínculo são preservados integralmente,
+  incluindo permissões e personalizações de renv; não há merge ou substituição.
+- Destinos ausentes recebem a configuração padrão com criação exclusiva.
+- Symlinks, inclusive pendentes, hardlinks com múltiplos vínculos, diretórios
+  ou outros tipos nos três destinos bloqueiam a criação antes dessas chamadas uv.
+- `.vscode` existente precisa ser diretório sem symlink; seus outros arquivos
+  permanecem intactos. Um arquivo ou symlink nesse caminho também bloqueia.
+  Diretórios do projeto e `.vscode` sem permissão de busca são recusados, pois
+  seus destinos não podem ser inspecionados com segurança.
+
+As condições são conferidas novamente antes das gravações. Se um arquivo
+ausente surgir durante o preparo, a execução recusa substituí-lo. A gravação de
+`settings.json` usa o diretório físico conferido. Cada conteúdo padrão é
+preparado em um temporário privado no mesmo diretório e publicado com `ln -T`
+sem force, que recusa qualquer destino já existente sem abri-lo para escrita.
+O temporário é limpo também em caso de falha; conteúdo parcial não é publicado.
+Ao final, cada configuração é identificada como criada ou preservada; conteúdo
+preservado não significa integração validada. Arquivos R continuam sendo criados quando
+ausentes, em todos os arquétipos.
+
+Isso protege contra os conflitos inspecionados e não é uma transação de toda a
+criação. Um conflito surgido após o início pode deixar etapas uv já concluídas;
+não há reversão automática delas. Não há garantia contra toda troca concorrente
+por processos com acesso de escrita ao projeto, especialmente renomeações de
+diretórios após a última conferência. Use um diretório sob seu controle.
+
+O uv escolhido por `UV_BIN` ou PATH é fixado como caminho absoluto antes de
+entrar no projeto. Entradas relativas, vazias ou com espaços não passam a
+selecionar outro executável após o `cd`. O fallback para uv no PATH permanece;
+isso não fixa checksum nem impede substituição concorrente do executável.
+
+Na criação, cada chamada filha neutraliza `UV_PROJECT`, `UV_WORKING_DIR`,
+`UV_WORKING_DIRECTORY`, `UV_ACTIVE`, `UV_PYTHON`, ativações de ambiente virtual
+e Conda, `PYTHONHOME` e `PYTHONPATH`. O destino de ambiente é sempre a `.venv`
+local; índices, credenciais, certificados, cache e diretório de runtimes do
+usuário permanecem disponíveis. Instalar explicitamente o runtime gerenciado
+e usar cache fora do projeto continuam sendo efeitos previstos.
+
+Antes das mutações, a criação recusa qualquer `pyproject.toml` ancestral,
+inclusive um projeto pai sem workspace. Essa política conservadora evita
+descoberta e alterações implícitas no pai sem acrescentar um parser TOML ou
+exigir Python do sistema para criar projetos. Escolha um destino independente
+ou administre explicitamente o projeto/workspace com uv. `init` usa
+`--no-workspace` e `python pin` usa `--no-project`; `add` e `sync` recebem o
+Python solicitado. Essas opções foram conferidas na fonte oficial do uv 0.9.0
+e na ajuda do uv 0.13.5; a criação não exige o subcomando `uv workspace dir`.
+
+Destinos cujo caminho físico termina em LF (quebra de linha real) não são
+suportados e são recusados antes de criar diretórios ou chamar uv. Isso inclui
+o destino padrão `.` e aliases que resolvam para esse caminho. Os caracteres
+do nome não são removidos nem substituídos para selecionar outra pasta.
+Caminhos comuns e com espaços mantêm o comportamento anterior; as regras
+independentes de nome de pacote de `uv init --name` permanecem aplicáveis.
+
+Uma `.venv` preexistente precisa ter estrutura mínima regular, `pyvenv.cfg`
+sem symlink/hardlink e interpretadores executáveis. A árvore existente é
+inspecionada sem percorrer aliases: links para fora da `.venv`, inclusive em
+destinos internos de headers ou pacotes, são recusados. Links internos como
+`lib64 -> lib` e symlinks legítimos dos interpretadores são preservados.
+A estrutura é conferida novamente após sync, sem executar
+o Python do projeto; ausência ou irregularidade impede a mensagem de sucesso.
+Isso não audita pacotes instalados nem cria sandbox para builds autorizados.
+Falhas propagam o código do uv; etapas anteriores podem permanecer aplicadas,
+sem um novo mecanismo de rollback.
+
+Depois da sincronização e validação da `.venv`, o gerador cria `.envrc` com:
 
 ```bash
 use devshell_python
