@@ -56,6 +56,68 @@ uv run ruff check .
 uv run ruff format .
 ```
 
+## Criar um novo projeto pelo gerador
+
+Na raiz deste template, execute com Bash e uv instalados:
+
+```bash
+bash scripts/init_project.sh ../meu-projeto --python 3.12
+```
+
+O gerador prepara o projeto, instala o runtime necessário, adiciona as
+dependências do arquétipo e sincroniza a `.venv`. Essas etapas podem baixar
+arquivos. Consulte `bash scripts/init_project.sh --help` para os arquétipos.
+
+Ele define `umask 077`: novas criações usam permissões privadas por padrão
+(diretórios `700`, arquivos `600`). Diretórios e permissões preexistentes são
+preservados; não há chmod recursivo. Se o caminho já tiver um ancestral
+gravável por grupo/outros, como `775`, a integração do Data Lab Dotfiles ainda
+poderá recusá-lo. Revise somente os caminhos apontados pela guarda antes de
+alterar suas permissões.
+
+Depois da sincronização, o gerador cria `.envrc` com:
+
+```bash
+use devshell_python
+```
+
+Esse conteúdo é uma integração opcional com
+[Data Lab Dotfiles](https://github.com/talesgomes27/data-lab-dotfiles) e direnv,
+que precisam estar configurados no terminal do usuário. `uv run` continua
+disponível independentemente dessa integração. Um `.envrc` já existente,
+inclusive um link simbólico, é preservado. Revise o arquivo completo e, se
+necessário, acrescente a linha acima ao conteúdo existente.
+
+Para habilitar a troca no projeto recém-criado, entre nele e autorize
+explicitamente após a revisão:
+
+```bash
+cd ../meu-projeto
+direnv allow .
+```
+
+A troca ocorre no próximo prompt: o terminal usa a `.venv` do projeto e
+restaura o ambiente anterior ao sair. Cada novo diretório precisa dessa
+autorização; o gerador não executa `direnv allow` nem configura whitelist.
+
+Se Git estiver disponível e o projeto ainda não tiver `.git`, ele será
+inicializado. Não há stage, commit ou push automático; a escolha dos arquivos
+e o primeiro commit ficam com o usuário.
+
+O Data Lab Dotfiles prepara o terminal, o uv e o ambiente pessoal `geral`.
+Este gerador prepara os arquivos e a `.venv` de cada projeto. Siga o
+[preparo do ambiente pessoal e da troca por projeto](https://github.com/talesgomes27/data-lab-dotfiles/blob/main/docs/SCIENCE.md#ambiente-pessoal-e-troca-automática-por-projeto)
+para conectar os dois fluxos; a autorização de cada `.envrc` continua manual.
+
+No Data Lab Dotfiles, o perfil `science` oferece a instalação do gerador como
+`pyinit`. O submódulo fixa o commit de origem e o instalador confere o checksum
+do script correspondente antes de publicá-lo no diretório de binários do
+usuário. Depois dessa instalação aprovada, também é possível executar:
+
+```bash
+pyinit meu-projeto --archetype ds
+```
+
 ## Como alternar a versão do Python no projeto
 
 Se outro projeto precisar de uma versão específica (exemplo: Python 3.11 ou 3.13), execute na raiz do repositório:
