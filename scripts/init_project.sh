@@ -64,6 +64,11 @@ Exemplos:
 Cria .envrc para Data Lab Dotfiles, preservando um arquivo existente.
 Na criacao, revise-o e execute direnv allow . manualmente para habilitar a troca.
 Na criacao, umask 077 protege novos caminhos; permissoes existentes sao preservadas.
+Configuracoes IDE/R regulares de vinculo unico sao preservadas.
+Symlinks, hardlinks e tipos inesperados nesses destinos bloqueiam antes do uv.
+Criacao usa a .venv local; projetos pais e ambientes redirecionados sao recusados.
+Criacao recusa caminhos fisicos terminados em LF, inclusive destino . e aliases.
+Falhas podem preservar etapas anteriores; nao ha rollback automatico da criacao.
 Git pode ser inicializado, sem stage, commit ou push automatico.
 EOF
 }
@@ -122,6 +127,117 @@ resolve_uv() {
     else
         fail "uv nao encontrado; instale-o explicitamente antes de continuar."
     fi
+    [[ "$UV_CMD" == /* ]] || UV_CMD="$PWD/$UV_CMD"
+}
+
+creation_uv() (
+    local status
+    unset UV_PROJECT UV_WORKING_DIR UV_WORKING_DIRECTORY UV_ACTIVE UV_PYTHON
+    unset VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV PYTHONHOME PYTHONPATH
+    if UV_PROJECT_ENVIRONMENT="$creation_project/.venv" "$UV_CMD" "$@"; then
+        return 0
+    else
+        status=$?
+        echo "Preparo interrompido: etapas anteriores podem permanecer aplicadas; nenhuma reversao automatica foi executada." >&2
+        return "$status"
+    fi
+)
+
+inspect_creation_scope() {
+    local parent=${creation_project%/*}
+    [[ -n "$parent" ]] || parent=/
+    while :; do
+        if [[ -d "$parent" && ! -x "$parent" ]]; then
+            fail "Diretorio pai sem permissao de busca: $parent."
+        fi
+        # Sem parser TOML novo: nao descobrir/administrar projetos pais implicitamente.
+        if [[ -e "$parent/pyproject.toml" || -L "$parent/pyproject.toml" ]]; then
+            fail "Projeto/workspace pai detectado em $parent; administre esse escopo explicitamente com uv. Nenhuma etapa de criacao foi executada."
+        fi
+        [[ "$parent" != / ]] || break
+        parent=${parent%/*}
+        [[ -n "$parent" ]] || parent=/
+    done
+}
+
+inspect_venv_paths() {
+    local directory=$1 path name resolved
+    [[ ! -L "$directory" && -d "$directory" && -r "$directory" && -x "$directory" ]] || fail ".venv com diretorio irregular ou sem acesso: $directory."
+    for path in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+        [[ -e "$path" || -L "$path" ]] || continue
+        if [[ -L "$path" ]]; then
+            name=${path##*/}
+            if [[ ${path%/*} == "$creation_project/.venv/bin" && ("$name" == python || "$name" == python3 || "$name" =~ ^python3\.[0-9]+$) ]]; then
+                [[ -f "$path" && -x "$path" ]] || fail "Interpretador da .venv irregular: $path."
+                continue
+            fi
+            resolved=$(realpath -m -- "$path")
+            [[ "$resolved" == "$creation_project/.venv/"* ]] || fail ".venv com link para fora do ambiente: $path. Prepare o ambiente explicitamente."
+        elif [[ -d "$path" ]]; then
+            inspect_venv_paths "$path"
+        fi
+    done
+}
+
+inspect_creation_venv() {
+    local required=${1:-false} venv="$creation_project/.venv" directory
+    if [[ ! -e "$venv" && ! -L "$venv" ]]; then
+        if "$required"; then fail ".venv local ausente apos sync; etapas anteriores podem ter sido concluidas."; fi
+        return 0
+    fi
+    inspect_venv_paths "$venv"
+    [[ ! -L "$venv/pyvenv.cfg" && -f "$venv/pyvenv.cfg" && $(stat -c '%h' -- "$venv/pyvenv.cfg") == 1 ]] || fail ".venv/pyvenv.cfg ausente ou irregular."
+    for directory in "$venv/bin/python" "$venv/bin/python3"; do
+        [[ -f "$directory" && -x "$directory" ]] || fail "Interpretador da .venv ausente ou nao executavel: $directory."
+    done
+    [[ "$venv/bin/python" -ef "$venv/bin/python3" ]] || fail "Interpretadores da .venv divergentes."
+}
+
+# Somente os destinos IDE/R da criacao; nenhum arquivo existente e reescrito.
+inspect_creation_configs() {
+    local base=$1 file path state directory
+    for directory in "$base" "$base/.vscode"; do
+        if [[ -d "$directory" && ! -x "$directory" ]]; then
+            fail "Conflito em $directory: diretorio sem permissao de busca; configuracoes nao podem ser inspecionadas."
+        fi
+    done
+    if [[ -L "$base/.vscode" || (-e "$base/.vscode" && ! -d "$base/.vscode") ]]; then
+        fail "Conflito em $base/.vscode: esperado diretorio sem symlink."
+    fi
+    for file in "${CONFIG_FILES[@]}"; do
+        path="$base/$file"
+        if [[ -L "$path" || (-e "$path" && ! -f "$path") ]]; then
+            fail "Conflito em $path: esperado arquivo regular sem symlink."
+        fi
+        state=absent
+        if [[ -e "$path" ]]; then
+            [[ $(stat -c '%h' -- "$path") == 1 ]] || fail "Conflito em $path: arquivo com multiplos links ou impossivel de inspecionar."
+            state=preserved
+        fi
+        if [[ -n ${CONFIG_STATES[$file]-} && ${CONFIG_STATES[$file]} != "$state" ]]; then
+            fail "Conflito em $path: destino surgiu ou mudou apos a inspecao."
+        fi
+        CONFIG_STATES[$file]=$state
+    done
+}
+
+write_creation_config() {
+    local file=$1 temporary
+    [[ ${CONFIG_STATES[$file]} != preserved ]] || return 0
+    (
+        if [[ "$file" == .vscode/settings.json ]]; then
+            [[ ! -L .vscode && -d .vscode ]] || fail "Conflito em .vscode: diretorio mudou antes da escrita."
+            # Gravar pelo cwd fisico evita atravessar um novo link em .vscode.
+            cd -P -- .vscode || exit 2
+            [[ "$PWD" == "$creation_project/.vscode" ]] || fail "Conflito em .vscode: caminho fisico inesperado."
+            file=settings.json
+        fi
+        temporary=$(mktemp -d -- .pyinit-config.XXXXXX) || exit 2
+        trap 'rm -f -- "$temporary/content"; rmdir -- "$temporary"' EXIT
+        cat >"$temporary/content" || exit 2
+        # ln -T sem force recusa qualquer destino existente, inclusive FIFO/link.
+        ln -T -- "$temporary/content" "$file"
+    ) || fail "Conflito em $1: criacao exclusiva recusada; configuracao existente preservada."
 }
 
 maintain_project() {
@@ -1430,6 +1546,19 @@ if "$SYNC" || "$ALLOW_DIRENV"; then
 fi
 resolve_uv
 
+for tool in stat mktemp ln rm rmdir realpath; do
+    command -v "$tool" &>/dev/null || fail "$tool (coreutils) necessario para criar configuracoes sem sobrescrita."
+done
+CONFIG_FILES=(.vscode/settings.json .Renviron .Rprofile)
+declare -A CONFIG_STATES=()
+inspect_creation_configs "$TARGET_DIR"
+# A sentinela conserva LFs finais; retirar apenas o LF emitido pelo comando.
+creation_project=$(realpath -m -- "$TARGET_DIR" && printf .) || fail "Nao foi possivel resolver o caminho fisico do projeto."
+creation_project=${creation_project%$'\n.'}
+[[ "$creation_project" != *$'\n' ]] || fail "Caminho fisico terminado em LF nao suportado; nenhuma chamada uv foi executada."
+inspect_creation_scope
+inspect_creation_venv
+
 echo "==> Configurando projeto Python..."
 echo "    Diretorio: $TARGET_DIR"
 echo "    Python:    $PYTHON_DEFAULT"
@@ -1442,38 +1571,41 @@ if [ "$TARGET_DIR" != "." ]; then
 fi
 
 PROJECT_NAME="$(basename "$PWD")"
+creation_location=$(pwd -P && printf .) || fail "Nao foi possivel conferir o diretorio fisico do projeto."
+creation_location=${creation_location%$'\n.'}
+[[ "$creation_location" == "$creation_project" ]] || fail "Diretorio do projeto mudou durante o preparo."
 
 # 2. Garantir runtime do Python
 echo "==> Verificando runtime Python $PYTHON_DEFAULT..."
-"$UV_CMD" python install "$PYTHON_DEFAULT"
+creation_uv python install "$PYTHON_DEFAULT"
 
 # 3. Inicializar projeto com uv
 if [ ! -f "pyproject.toml" ]; then
     echo "==> Inicializando pyproject.toml e estrutura base..."
-    "$UV_CMD" init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME"
+    creation_uv init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME" --no-workspace
 fi
 
 # 4. Fixar versao no .python-version
-"$UV_CMD" python pin "$PYTHON_DEFAULT"
+creation_uv python pin "$PYTHON_DEFAULT" --no-project
 
 # 5. Adicionar dependencias de desenvolvimento
 echo "==> Configurando ferramentas de teste e lint..."
-"$UV_CMD" add --dev pytest pytest-cov ruff
+creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
 
 # 6. Adicionar pacotes especificos de cada arquetipo
 case "$ARCHETYPE" in
     ds)
         echo "==> Adicionando stack de Data Science (polars, duckdb, pyarrow, ipykernel)..."
-        "$UV_CMD" add polars duckdb pyarrow
-        "$UV_CMD" add --dev ipykernel
+        creation_uv add --python "$PYTHON_DEFAULT" polars duckdb pyarrow
+        creation_uv add --python "$PYTHON_DEFAULT" --dev ipykernel
         ;;
     api)
         echo "==> Adicionando stack de APIs (fastapi, pydantic, httpx)..."
-        "$UV_CMD" add fastapi pydantic httpx
+        creation_uv add --python "$PYTHON_DEFAULT" fastapi pydantic httpx
         ;;
     cli)
         echo "==> Adicionando stack de CLI (typer, rich)..."
-        "$UV_CMD" add typer rich
+        creation_uv add --python "$PYTHON_DEFAULT" typer rich
         ;;
     universal)
         # Nenhuma dependencia extra alem das de dev
@@ -1507,9 +1639,10 @@ EOF
 fi
 
 # 8. Integracao com IDEs (VS Code e Positron)
-echo "==> Configurando integracao para VS Code e Positron (.vscode/settings.json)..."
-mkdir -p .vscode
-cat >.vscode/settings.json <<'EOF'
+inspect_creation_configs .
+[[ -d .vscode ]] || mkdir -- .vscode
+echo "==> Preparando configuracoes IDE/R; arquivos existentes serao preservados..."
+write_creation_config .vscode/settings.json <<'EOF'
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "[python]": {
@@ -1524,12 +1657,11 @@ cat >.vscode/settings.json <<'EOF'
 EOF
 
 # 9. Integracao com RStudio e Quarto CLI (.Renviron e .Rprofile)
-echo "==> Configurando integracao para RStudio e Quarto (.Renviron e .Rprofile)..."
-cat >.Renviron <<'EOF'
+write_creation_config .Renviron <<'EOF'
 RETICULATE_PYTHON=.venv/bin/python
 EOF
 
-cat >.Rprofile <<'EOF'
+write_creation_config .Rprofile <<'EOF'
 # Vincula o reticulate ao ambiente virtual gerenciado pelo uv
 if (file.exists(".venv/bin/python")) {
   Sys.setenv(RETICULATE_PYTHON = file.path(getwd(), ".venv/bin/python"))
@@ -1538,7 +1670,8 @@ EOF
 
 # 10. Sincronizar ambiente virtual
 echo "==> Criando e sincronizando .venv..."
-"$UV_CMD" sync
+creation_uv sync --python "$PYTHON_DEFAULT"
+inspect_creation_venv true
 
 # 11. Preparar a integracao opcional com direnv sem conceder autorizacao.
 if [ -e ".envrc" ] || [ -L ".envrc" ]; then
@@ -1587,7 +1720,12 @@ echo "  direnv allow .                   # Autorizacao manual apos a revisao"
 echo "  A troca ocorre no proximo prompt; ancestrais existentes precisam ser seguros."
 echo "Nenhum arquivo foi colocado em stage e nenhum commit ou push foi executado."
 echo ""
-echo "Compatibilidade de IDEs detectada:"
-echo "  - VS Code e Positron: .vscode/settings.json configurado."
-echo "  - RStudio e Quarto:   .Renviron e .Rprofile apontam RETICULATE_PYTHON para .venv."
+echo "Arquivos de configuracao IDE/R:"
+for file in "${CONFIG_FILES[@]}"; do
+    if [[ ${CONFIG_STATES[$file]} == preserved ]]; then
+        echo "  $file: preservado; conteudo e integracao nao foram alterados nem verificados."
+    else
+        echo "  $file: criado com a configuracao padrao para .venv."
+    fi
+done
 echo ""
