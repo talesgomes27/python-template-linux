@@ -307,8 +307,15 @@ pacotes Conda sem equivalência revisada bloqueiam a migração.
 Consulte os [formatos, limites e recuperação](docs/migration-recipe-for-agents.md).
 
 A versão do Python vem do ambiente `geral` quando disponível, com fallback
-3.12; `--python` permite escolher outra versão compatível. Quando esta versão
-estiver instalada como `pyinit`, os argumentos são os mesmos. Confira
+3.12; `--python` permite escolher outra versão compatível. Na migração, um
+pedido minor, como `--python 3.12`, representa a faixa de patches: `>3.12` e
+`!=3.12` permitem patches posteriores a `.0`, enquanto `!=3.12.*` exclui todo
+esse minor. Um pedido explícito `--python 3.12.0` continua sujeito à comparação
+exata. O dry-run verifica se há um patch possível; isso não garante sua
+disponibilidade. Após confirmação, uv valida o interpretador gerenciado já
+instalado, sem download nem alteração silenciosa de `requires-python`.
+Quando esta versão do gerador estiver instalada como `pyinit`, os argumentos
+são os mesmos. Confira
 `pyinit --help`: o script instalado é independente do checkout e sua atualização
 exige a instalação aprovada do componente no Data Lab.
 
