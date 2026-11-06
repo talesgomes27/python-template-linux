@@ -1,176 +1,130 @@
-# Receita de Migração para Agentes de IA (Antigravity, Claude Code, Codex, Cursor)
+# Migrar projetos legados com pyinit
 
-Este documento define o protocolo estrito para que um agente de IA migre qualquer repositório Python legado para o padrão canônico moderno: **`uv` + `pyproject.toml` (PEP 621) + `Ruff` + `pytest`**.
+O modo `--migrate` prepara o ambiente de um projeto existente para uv,
+`pyproject.toml`, `uv.lock`, `.python-version` e `.venv` local. Preserva código,
+notebooks, dados, configuração de IDEs e os manifestos legados. Não executa
+refatoração, formatação, testes do projeto, comandos Git ou autorização direnv.
 
----
+## Revisar antes de executar
 
-## Prompt para Disparo (Copie e Cole para o Agente)
+A partir do checkout:
 
-Quando abrir um repositório legado em qualquer ferramenta de IA, envie o seguinte comando:
-
-```text
-Atue como engenheiro de software sênior. Migre o ambiente Python deste repositório para a stack moderna: uv + pyproject.toml (PEP 621) + Ruff + pytest, garantindo compatibilidade com distribuições Linux e IDEs (VS Code, Positron, RStudio). Siga rigorosamente o protocolo descrito abaixo:
-1. Inspecione e faça o inventário das dependências existentes (requirements.txt, Pipfile, poetry.lock, environment.yml ou setup.py).
-2. Não perca nenhuma dependência de produção nem versão restritiva necessária. Separe dependências de runtime das ferramentas de desenvolvimento (testes, linters).
-3. Elimine ferramentas redundantes (black, flake8, isort, pipenv, poetry, virtualenv avulso) e centralize as regras no pyproject.toml usando Ruff.
-4. Crie .python-version, configure .vscode/settings.json, .Renviron e .Rprofile apontando para .venv/bin/python.
-5. Execute uv sync, rode uv run ruff check . --fix, uv run ruff format . e valide a suíte com uv run pytest.
-6. Nunca sugira ou use 'source .venv/bin/activate' nem 'pip install'. Use sempre 'uv run'.
-7. Finalize com um commit semântico no Git.
+```bash
+bash scripts/init_project.sh /caminho/absoluto/projeto --migrate --dry-run
+bash scripts/init_project.sh /caminho/absoluto/projeto --migrate --python 3.13.11
 ```
 
----
+Com esta versão instalada como `pyinit`, os mesmos argumentos funcionam sem
+indicar o script. O Data Lab fixa o artefato/submódulo por commit e checksum;
+confira `pyinit --help` antes de usar as novas opções. Atualizar o checkout ou
+aplicar dotfiles não atualiza o executável instalado.
 
-## Protocolo Operacional para o Agente
+O diagnóstico exige `/usr/bin/python3` >=3.11. Emite JSON com formato, versão,
+dependências, grupos, hashes/identidades, mudanças e avisos. Bloqueios retornam
+código 2 e um JSON com `blockers`. `--dry-run` não chama uv, executa código do
+projeto, cria cache, arquivo, backup ou diretório de estado. URLs são ocultadas
+na saída do plano, pois podem conter credenciais; revise o manifesto original.
 
-### Fase 1: Diagnóstico e Inventário
-O agente deve inspecionar o repositório antes de alterar arquivos:
-1. Localizar arquivos de configuração legados:
-   - `requirements.txt`, `requirements-dev.txt`, `dev-requirements.txt`
-   - `Pipfile`, `Pipfile.lock`
-   - `pyproject.toml` no formato arcaico do Poetry (`[tool.poetry]`) ou Flit
-   - `setup.py`, `setup.cfg`
-   - `environment.yml` (Conda)
-2. Identificar a versão mínima de Python suportada no código ou documentação. Se não especificada, adotar `3.12`.
-3. Mapear:
-   - **Pacotes de produção:** bibliotecas necessárias para rodar a aplicação/análise.
-   - **Pacotes de desenvolvimento:** linters, test runners, formatadores e kernels (`pytest`, `black`, `flake8`, `isort`, `ipykernel`, `mypy`).
+Sem `--python`, lê somente a versão em `pyvenv.cfg` do ambiente `geral` em
+`$XDG_DATA_HOME/devshell/venvs/geral` (fallback `~/.local/share`); sem essa
+informação, usa 3.12. Não importa nem executa o ambiente geral. Um pedido como
+`--python 3.13` representa a faixa de patches desse minor, e o uv verifica o
+runtime gerenciado disponível após a confirmação. A versão precisa
+respeitar as restrições declaradas pelo projeto: incompatibilidades não são
+corrigidas alterando silenciosamente o requisito de Python.
 
----
+## Formatos reconhecidos e limites
 
-### Fase 2: Purga e Limpeza do Legado
-Remover artefatos obsoletos que geram inconsistência ou conflito:
-- Remover `.venv` antigo do sistema (pois pode estar corrompido ou apontando para caminhos absolutos da máquina anterior):
-  ```bash
-  rm -rf .venv
-  ```
-- Remover lockfiles e configurações obsoletas:
-  - `Pipfile`, `Pipfile.lock`
-  - `poetry.lock` (se não for mais usado)
-  - `.flake8`, `.isort.cfg`, `tox.ini` (quando substituídos por Ruff)
-- Manter o `requirements.txt` original temporariamente renomeado como `requirements.txt.bak` até validação final.
+| Formato | Conversão automática conservadora |
+|---|---|
+| pip/pip-tools | `requirements.in` tem prioridade sobre `requirements.txt`; reconhece um arquivo dev (`requirements-dev.in`, `requirements-dev.txt` ou `dev-requirements.txt`), permitindo o par pip-tools `.in`/`.txt` e recusando nomes concorrentes, includes locais `-r`, constraints `-c`, marcadores e hashes. Não leva hashes do pip ao TOML; uv gera seu próprio lock. Opções de índice, editáveis, includes externos/circulares e sintaxes não suportadas bloqueiam. |
+| Conda/Anaconda/Miniforge | `environment.yml` ou `.yaml`, listas YAML simples em bloco, requisito de Python, lista revisada de pacotes Python e seção `pip`. Dependências nativas/desconhecidas, canais/builds por pacote e YAML avançado exigem revisão. Canais Conda não são transportados para PyPI. Um inventário `conda-meta` sem manifesto solicita exportação/revisão; não infere dependências diretas a partir de tudo que foi instalado. |
+| Poetry | `[tool.poetry.dependencies]`, restrições simples/exatas/caret/tilde, extras, marcadores, dependências opcionais associadas a extras, dev antigo e grupos. Grupos não opcionais são mantidos como grupos padrão do uv. Fontes, caminhos/Git, restrições Python por dependência, alternativas complexas e `include-groups`, formatos híbridos PEP 621/Poetry com dependências sem uv.lock e declarações dinâmicas exigem revisão. A configuração original permanece no arquivo. |
+| Pipenv | `Pipfile` com produção/dev e restrição Python; ou `Pipfile.lock` isolado com versões/marcadores/extras simples. Fontes além do PyPI padrão e dependências especiais bloqueiam. O lock original é preservado. |
+| Setuptools | `setup.cfg` com dependências estáticas/extras/Python, ou um wrapper literal reconhecido de `setuptools.setup` em `setup.py`, lido com AST sem execução. Declarações dinâmicas, `file:`, `attr:` e combinações ambíguas bloqueiam. É migração de ambiente: distribuição, entry points e metadados de publicação exigem revisão própria. |
+| PEP 621/uv | Preserva `pyproject.toml` estático. Quando há `uv.lock`, usa `--locked` e exige bytes idênticos ao final. Ambiente ausente, antigo ou quebrado pode ser substituído com backup. |
 
----
+Formatos concorrentes, inclusive arquivos requirements dev junto de outro
+gerenciador, exigem escolher/revisar a fonte principal antes de prosseguir. Em projetos uv já fixados, PEP 621 e grupos uv são a fonte principal; exports
+`requirements` e metadados Poetry remanescentes ficam preservados, com aviso.
+Nomes/versões estáticos de projetos Poetry/setuptools são mantidos. Workspaces uv são recusados para evitar alterar locks externos.
+A existência de `.venv`, `venv/` ou um ambiente Conda global, sozinha, não basta
+para reconstruir as dependências do projeto.
 
-### Fase 3: Estruturação com PEP 621 e `uv`
+Versões instaladas podem mudar ao resolver um novo lock de outro gerenciador;
+restrições declaradas são preservadas e os locks originais não são apagados.
+Revise o novo `uv.lock` e valide o comportamento científico/operacional.
+O migrador não instala Ruff/pytest nem substitui ferramentas declaradas por
+conta própria: essas decisões pertencem à revisão do projeto.
 
-1. **Fixar runtime:**
-   Criar arquivo `.python-version` na raiz do projeto contendo a versão desejada (exemplo: `3.12`).
-   ```bash
-   uv python pin 3.12
-   ```
+## Confirmação, segurança e backup
 
-2. **Inicializar `pyproject.toml` (se inexistente):**
-   ```bash
-   uv init --bare
-   ```
+A aplicação mostra o plano e pede uma resposta explícita `s`/`sim` com Enter.
+EOF, resposta incompleta ou recusa cancelam sem escrita. Conteúdo, identidade,
+modo e propriedade dos arquivos e diretórios são conferidos de novo; mudanças
+após a revisão cancelam antes do backup. Um lock na raiz serializa migrações.
 
-3. **Migrar dependências de produção:**
-   Para cada dependência identificada, adicionar via `uv`:
-   ```bash
-   # Exemplo a partir de lista ou requirements legado
-   uv add $(cat requirements.txt | grep -v '^#' | grep -v '^-')
-   ```
+Symlinks/hardlinks nos manifestos e destinos, diretórios de outro proprietário
+e ancestrais graváveis por grupo/outros bloqueiam. A raiz própria do projeto
+pode ter somente os bits de escrita compartilhada removidos, por descritor,
+após confirmação; esse reparo seguro não é desfeito em caso de falha. Quando `pyproject.toml` ou
+`uv.lock` existentes permitem escrita compartilhada, o plano também anuncia
+cópias privadas dos mesmos bytes antes do uv; os modos anteriores ficam no
+backup. Permissões seguras desses metadados permanecem após falha.
+Não há chmod recursivo nem alteração das permissões de ancestrais.
 
-4. **Migrar ferramentas de desenvolvimento:**
-   Substituir `black`, `flake8`, `isort` e `autopep8` exclusivamente por `ruff`:
-   ```bash
-   uv add --dev pytest pytest-cov ruff
-   ```
-   Se o projeto contiver notebooks Jupyter/Quarto, adicionar:
-   ```bash
-   uv add --dev ipykernel
-   ```
+Cada execução cria `.pyinit-backups/ID` com modo 0700, manifesto privado e
+cópias dos arquivos inspecionados, com os modos anteriores registrados.
+A `.venv` anterior é renomeada para `venv-before`, preservando inode e conteúdo.
+Ambientes `venv/`, `env/`, globais ou Conda externos não são modificados.
+Antes do primeiro conteúdo privado, acrescenta a proteção de backup ao `.gitignore`, preservando suas linhas anteriores. Essa preparação também é tratada em caso de falha. Novos arquivos são privados (umask 077). Não remova os backups antes de validar.
 
-5. **Configurar ferramentas no `pyproject.toml`:**
-   Garantir que as seguintes seções existam no arquivo:
-   ```toml
-   [tool.ruff]
-   line-length = 88
-   target-version = "py312"
+O uv é encontrado por `UV_BIN`/PATH. O sync força a `.venv` local, remove
+ativações herdadas e overrides uv de destino/configuração e exige CPython
+**gerenciado já instalado**, com `--no-python-downloads`. Instale previamente o
+runtime escolhido pelo processo aprovado da sua máquina. Pacotes podem ser
+baixados e builds executados após a confirmação. O migrador não instala
+ferramentas do sistema, não desinstala Conda nem muda o Python do sistema.
 
-   [tool.ruff.lint]
-   select = ["E", "F", "I", "B", "UP"]
-   ignore = []
+## Falha e recuperação
 
-   [tool.ruff.format]
-   quote-style = "double"
-   indent-style = "space"
+Falha no sync ou na validação estrutural restaura os arquivos gerenciados e a
+`.venv` anterior. A tentativa malsucedida fica em `failed-venv`, quando criada;
+`manifest.json` registra `rolled-back`. O reparo seguro da raiz e a regra final
+que ignora `.pyinit-backups/` no `.gitignore` permanecem, para proteger o backup.
+O `.gitignore` original está em `files/.gitignore` no registro privado.
+Backups não são apagados automaticamente e cada execução usa um ID diferente.
 
-   [tool.pytest.ini_options]
-   minversion = "8.0"
-   testpaths = ["tests"]
-   addopts = "-ra -q --strict-markers"
-   ```
+Após uma interrupção abrupta (SIGKILL, falta de energia/disco), confira o
+`manifest.json` e os caminhos antes de repetir. Se o estado estiver `pending`,
+não sobrescreva a `.venv`: preserve uma tentativa incompleta, restaure
+`venv-before` ao caminho original e use as cópias em `files/` e os modos do plano
+para recuperar os arquivos. Nunca remova um ambiente para contornar um conflito.
+O registro não é uma sandbox contra builds autorizados ou processos do mesmo UID.
 
----
+## Validar e autorizar a troca
 
-### Fase 4: Integração com IDEs (VS Code, Positron e RStudio)
+Depois da migração:
 
-Criar configurações para que editores no Linux selecionem o interpretador automaticamente:
+```bash
+cd /caminho/absoluto/projeto
+uv run --no-sync python --version
+# Execute a suíte apropriada; não rode uma pipeline científica sem autorização.
+# Se o Data Lab estiver instalado:
+devshell project doctor --path "$PWD"
+# Revise todo o .envrc e suas permissões, inclusive conteúdo preexistente:
+direnv allow .
+```
 
-1. **`.vscode/settings.json` (para VS Code e Positron):**
-   ```json
-   {
-     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
-     "[python]": {
-       "editor.defaultFormatter": "charliermarsh.ruff",
-       "editor.formatOnSave": true,
-       "editor.codeActionsOnSave": {
-         "source.fixAll": "explicit",
-         "source.organizeImports": "explicit"
-       }
-     }
-   }
-   ```
+O migrador cria somente `use devshell_python` quando `.envrc` não existe;
+arquivo preexistente é preservado. O comando não chama `direnv allow`, não
+configura whitelist e recusa `--allow-direnv` junto de `--migrate`. A troca de
+ambiente depende da integração Data Lab/direnv instalada na shell.
 
-2. **`.Renviron` (para RStudio e Quarto CLI):**
-   ```bash
-   RETICULATE_PYTHON=.venv/bin/python
-   ```
+`--fix-permissions [--sync] [--allow-direnv]` continua sendo manutenção de uma
+`.venv` válida, com suas confirmações próprias. Não combine esses argumentos ou
+`--archetype` com `--migrate`. Para uma nova migração de runtime, cada execução
+preserva a `.venv` atual em um novo backup; para manutenção habitual, use o modo
+de manutenção existente.
 
-3. **`.Rprofile`:**
-   ```r
-   if (file.exists(".venv/bin/python")) {
-     Sys.setenv(RETICULATE_PYTHON = file.path(getwd(), ".venv/bin/python"))
-   }
-   ```
-
-4. **Atualizar `.gitignore`:**
-   Garantir que `.venv/`, `.ruff_cache/`, `.pytest_cache/`, `.coverage`, `__pycache__/` e `.Rproj.user/` estejam listados.
-
----
-
-### Fase 5: Sincronização, Refatoração de Lint e Validação
-
-1. **Sincronizar o ambiente:**
-   ```bash
-   uv sync
-   ```
-
-2. **Formatar e sanitizar código:**
-   ```bash
-   uv run ruff check . --fix
-   uv run ruff format .
-   ```
-
-3. **Executar os testes existentes:**
-   ```bash
-   uv run pytest
-   ```
-
-4. **Remover arquivos temporários de backup:**
-   ```bash
-   rm -f requirements.txt.bak
-   ```
-
----
-
-### Fase 6: Criação do `AGENTS.md` e Versionamento
-
-1. Adicionar o arquivo `AGENTS.md` na raiz para blindar futuros agentes de IA contra comandos legados (`pip install`, `virtualenv`, ativações com `source`).
-2. Registrar a migração no Git:
-   ```bash
-   git add .
-   git commit -m "refactor: migrate python environment to modern uv, pyproject.toml, ruff and pytest"
-   ```
+As verificações e limitações estão em [validação local](VALIDATION.md).

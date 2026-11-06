@@ -146,8 +146,9 @@ instalam o lançador nem alteram a configuração da shell.
 | `--allow-direnv` | Exige `--fix-permissions`, direnv e `/usr/bin/python3`. Mostra o `.envrc` completo com controles escapados, pede uma confirmação específica, confere novamente conteúdo/metadados e só então executa `direnv allow .`. |
 
 As duas opções adicionais podem ser usadas juntas ou individualmente com
-`--fix-permissions`. `--python` e `--archetype` pertencem à criação e são
-recusadas no modo de manutenção. O diretório padrão é o atual; para outro,
+`--fix-permissions`. `--python` também pode ser usado com `--migrate`;
+`--archetype` pertence somente à criação. Ambos são recusados com
+`--fix-permissions`. O diretório padrão é o atual; para outro,
 use caminho sem componentes `..`, conforme a guarda do Data Lab.
 
 O sync usa o interpretador existente, sem download de Python, e fixa o destino
@@ -184,6 +185,31 @@ usuário. Depois dessa instalação aprovada, também é possível executar:
 ```bash
 pyinit meu-projeto --archetype ds
 ```
+
+## Migrar um projeto legado
+
+O modo `--migrate` reconhece requirements/pip-tools, Conda, Poetry, Pipenv,
+setuptools estático e PEP 621/uv. Ele mostra o plano, preserva os manifestos e
+prepara uma nova `.venv` com backup da anterior; não altera código, dados ou IDEs.
+
+```bash
+bash scripts/init_project.sh /caminho/absoluto/projeto --migrate --dry-run
+bash scripts/init_project.sh /caminho/absoluto/projeto --migrate --python 3.13.11
+```
+
+`--dry-run` não escreve estado nem chama uv. A aplicação pede confirmação,
+exige CPython gerenciado já instalado e restaura o ambiente/arquivos gerenciados
+se o sync falhar. Backups privados ficam em `.pyinit-backups/ID`, protegidos
+por uma regra no `.gitignore` que permanece mesmo após rollback.
+O `direnv allow .` continua manual. Formatos ambíguos, metadados dinâmicos e
+pacotes Conda sem equivalência revisada bloqueiam a migração.
+Consulte os [formatos, limites e recuperação](docs/migration-recipe-for-agents.md).
+
+A versão do Python vem do ambiente `geral` quando disponível, com fallback
+3.12; `--python` permite escolher outra versão compatível. Quando esta versão
+estiver instalada como `pyinit`, os argumentos são os mesmos. Confira
+`pyinit --help`: o script instalado é independente do checkout e sua atualização
+exige a instalação aprovada do componente no Data Lab.
 
 ## Como alternar a versão do Python no projeto
 
