@@ -33,7 +33,7 @@ Opcoes:
   -p, --python VERSAO    Versao do Python a fixar (padrao: 3.12)
   -a, --archetype TIPO   Arquétipo do projeto:
                            universal : Base limpa com pytest e ruff (padrao)
-                           ds        : Data Science (polars, duckdb, pyarrow, ipykernel)
+                           ds        : Data Science (polars, duckdb, pyarrow, ipykernel; JupyterLab no grupo notebook)
                            api       : Web APIs (fastapi, pydantic, httpx)
                            cli       : Linha de comando (typer, rich)
   -h, --help             Exibe esta mensagem de ajuda
@@ -1667,9 +1667,10 @@ creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
 # 6. Adicionar pacotes especificos de cada arquetipo
 case "$ARCHETYPE" in
     ds)
-        echo "==> Adicionando stack de Data Science (polars, duckdb, pyarrow, ipykernel)..."
+        echo "==> Adicionando stack de Data Science (polars, duckdb, pyarrow, ipykernel e JupyterLab)..."
         creation_uv add --python "$PYTHON_DEFAULT" polars duckdb pyarrow
         creation_uv add --python "$PYTHON_DEFAULT" --dev ipykernel
+        creation_uv add --python "$PYTHON_DEFAULT" --group notebook jupyterlab
         ;;
     api)
         echo "==> Adicionando stack de APIs (fastapi, pydantic, httpx)..."

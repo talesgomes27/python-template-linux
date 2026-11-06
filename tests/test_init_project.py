@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -825,6 +826,138 @@ def test_creation_uv_keeps_all_project_calls_local(
             "UV_PYTHON_INSTALL_DIR",
         ):
             assert child[key] == env[key]
+
+
+@pytest.mark.parametrize("archetype", ["universal", "ds", "api", "cli"])
+def test_creation_notebook_group_is_only_added_for_ds(
+    config_creation: tuple[Path, dict[str, str]], archetype: str
+) -> None:
+    workspace, env = config_creation
+    result = run_init(
+        config_creation,
+        workspace / "study",
+        "--archetype",
+        archetype,
+        "--python",
+        "3.13.11",
+    )
+    assert result.returncode == 0, result.stderr
+    additions = [c["args"] for c in uv_details(env) if c["args"][0] == "add"]
+    notebook = [a for a in additions if "jupyterlab" in a or "--group" in a]
+    assert notebook == (
+        [["add", "--python", "3.13.11", "--group", "notebook", "jupyterlab"]]
+        if archetype == "ds"
+        else []
+    )
+    if archetype == "ds":
+        assert [
+            "add",
+            "--python",
+            "3.13.11",
+            "polars",
+            "duckdb",
+            "pyarrow",
+        ] in additions
+        assert ["add", "--python", "3.13.11", "--dev", "ipykernel"] in additions
+
+
+@pytest.mark.parametrize("state", ["new", "existing-group", "missing-package"])
+def test_ds_notebook_group_real_uv_offline(
+    scaffold: tuple[Path, dict[str, str]], state: str
+) -> None:
+    workspace, env = scaffold
+    target = workspace / "notebook-study"
+    wheels = workspace / "wheels"
+    wheels.mkdir()
+    # Wheel artificial: verifica grupo/lock/entry point, não o JupyterLab real.
+    if state != "missing-package":
+        with zipfile.ZipFile(
+            wheels / "jupyterlab-0.1.0-py3-none-any.whl", "w"
+        ) as wheel:
+            wheel.writestr(
+                "notebook_fixture.py",
+                "import sys\ndef main():\n"
+                "    assert sys.argv[1:] == ['lab', '--version']\n"
+                "    print('fixture-notebook 0.1.0')\n",
+            )
+            meta = "jupyterlab-0.1.0.dist-info/"
+            wheel.writestr(
+                meta + "METADATA",
+                "Metadata-Version: 2.1\nName: jupyterlab\nVersion: 0.1.0\n",
+            )
+            wheel.writestr(
+                meta + "WHEEL",
+                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            )
+            wheel.writestr(
+                meta + "entry_points.txt",
+                "[console_scripts]\njupyter = notebook_fixture:main\n",
+            )
+            wheel.writestr(meta + "RECORD", "")
+    if state == "existing-group":
+        target.mkdir()
+        (target / "pyproject.toml").write_text(
+            '[project]\nname = "study"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.11"\ndependencies = []\n'
+            "[dependency-groups]\nshared = []\n"
+            'notebook = ["jupyterlab==0.1.0", {include-group = "shared"}]\n'
+        )
+    env.update(UV_NO_INDEX="1", UV_FIND_LINKS=str(wheels), UV_PYTHON_DOWNLOADS="never")
+    Path(env["UV_BIN"]).write_text(
+        f"#!{sys.executable}\n"
+        "import os, subprocess, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['python', 'install'] or "
+        "(args[0] == 'add' and '--group' not in args):\n"
+        "    sys.exit(0)\n"
+        "cmd = [os.environ['TEST_REAL_UV'], '--no-config', "
+        "'--no-cache', '--offline', *args]\n"
+        "if args[0] == 'sync': cmd += ['--no-install-project']\n"
+        "sys.exit(subprocess.call(cmd))\n"
+    )
+    result = run_init(scaffold, target, "--python", sys.executable, "--archetype", "ds")
+    if state == "missing-package":
+        assert result.returncode != 0
+        assert "jupyterlab" in result.stderr.lower()
+        assert "Projeto configurado com sucesso" not in result.stdout
+        return
+    assert result.returncode == 0, result.stderr
+    manifest = target / "pyproject.toml"
+    groups = tomllib.loads(manifest.read_text())["dependency-groups"]
+    assert any(
+        isinstance(dep, str) and dep.startswith("jupyterlab")
+        for dep in groups["notebook"]
+    )
+    if state == "existing-group":
+        assert groups["shared"] == []
+        assert groups["notebook"] == ["jupyterlab==0.1.0", {"include-group": "shared"}]
+    lock = target / "uv.lock"
+    before = (manifest.read_bytes(), lock.read_bytes())
+    launch = subprocess.run(
+        [
+            env["TEST_REAL_UV"],
+            "--no-config",
+            "--no-cache",
+            "--offline",
+            "run",
+            "--locked",
+            "--group",
+            "notebook",
+            "jupyter",
+            "lab",
+            "--version",
+        ],
+        cwd=target,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert launch.returncode == 0, launch.stderr
+    assert launch.stdout.strip() == "fixture-notebook 0.1.0"
+    assert (manifest.read_bytes(), lock.read_bytes()) == before
+    assert not Path(env["HOME"], "forbidden-git").exists()
+    assert not (Path(env["XDG_DATA_HOME"]) / "direnv/allow").exists()
 
 
 @pytest.mark.parametrize("existing", [False, True])
