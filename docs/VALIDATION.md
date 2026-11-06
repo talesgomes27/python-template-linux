@@ -288,6 +288,84 @@ inspeção de links da `.venv` permanecem. Os demais achados e funcionalidades
 continuam fora do escopo. Os novos patches distinguem o ajuste sobre a candidata
 anterior, A2/A3 corrigida sobre a mesma A1 e o acumulado sobre `288a183`.
 
+## Candidata A4 — composição Ruff/pytest — 2026-11-06
+
+Base integrada: `a912bb1f5580a2e732f4bbe0789168eaf6c141a9`, árvore
+`cb7c4790ddcae9e8a2d3e27cd7a8a453244ac955`, contendo A1, A2, A3 e A2-LF-01.
+A candidata parte de uma fotografia dos 26 arquivos versionados, sem `.git`,
+`.envrc` pessoal, caches ou ambiente de desenvolvimento. Somente gerador,
+testes do gerador, README e este registro foram alterados.
+
+A4 substitui a decisão textual única sobre `[tool.ruff]` por leitura TOML
+semântica e composição independente das famílias Ruff e pytest. Uma família
+existente permanece inteira, sem completar chaves/subtabelas ou substituir
+valores. Só a família ausente recebe os padrões anteriores. O documento
+resultante completo precisa ser TOML válido antes de acrescentar os blocos;
+o prefixo original não é reescrito e, sem inclusão, a etapa não grava.
+Tabelas inline fechadas que exigiriam reescrita recusam com orientação para
+composição manual. Tipos incompatíveis e TOML malformado também recusam.
+
+O usuário aceitou o novo pré-requisito `/usr/bin/python3` >=3.11 com `tomllib`.
+O script continua standalone, sem pacote Python adicional. Esse Python roda
+com `-I -B`, sem importar código do projeto; não é instalado nem alterado.
+A leitura inicial antecede mkdir e todas as chamadas uv; o arquivo é lido
+novamente depois dessas chamadas e antes da inclusão. Isso não cria transação
+contra alterações concorrentes nem rollback de etapas uv anteriores.
+
+Regressões observadas nesta execução:
+
+- A fotografia de base passou os 200 testes originais; a coleta também foi
+  conferida separadamente, sem alterar seleção ou pré-condições.
+- A matriz nova de 19 casos teve 17 falhas e dois controles aprovados no
+  código anterior; depois da correção, os 19 passaram. As falhas incluem
+  pytest ausente quando Ruff existe, tabelas duplicadas, falsos cabeçalhos,
+  tipos incompatíveis, recusa inicial e revalidação após mudança durante uv.
+- Os testes conferem ausência/uma/ambas as famílias, Ruff só com subtabela,
+  chaves citadas/pontuadas/inline, comentários e strings com cabeçalhos,
+  bytes originais, CRLF, ausência de LF final e reexecução sem nova gravação.
+- A integração offline passou nos quatro estados novo/Ruff/pytest/ambos.
+  Com os testes novos sobre a base congelada, os dois estados intermediários
+  falharam: pytest ausente ou TOML duplicado recusado pelo uv real. `pin` e
+  `sync` são reais; `init` é real quando necessário. `python install` e `add`
+  são simulados. O sync não instala o projeto, dependências ou runtime;
+  sentinelas de projeto/ambiente externos artificiais permanecem intactas.
+- A suíte final completa passou **222 testes em 28,48 s**, sem skips, falhas
+  ou avisos, incluindo manutenção, A1/A2/A3/LF-01 e as sete integrações de
+  migração com suas pré-condições originais de CPython gerenciado.
+
+O runner usou CPython 3.12.15 gerenciado, pytest 9.1.1, Ruff 0.17.1 e uv
+0.13.5. O parser chamado pelo gerador foi o Python do sistema 3.14.4. Uma
+verificação adicional do mesmo helper extraído passou oito fixtures em cada
+um dos CPython 3.11.17, 3.12.15, 3.13.11 e 3.14.4 já disponíveis: 32 casos,
+distintos dos 222 pytest e sem download de interpretadores. Essa verificação
+isolada do helper não é matriz completa do gerador nem CI.
+
+Passaram Ruff check/format dos 20 arquivos Python e do novo helper embutido
+extraído, ShellCheck, shfmt em conferência, sintaxe Bash e ajuda. O ambiente
+de desenvolvimento foi copiado; os comandos usam uv offline/no-sync/no-cache,
+com HOME/XDG/cache/TMPDIR descartáveis e bytecode desabilitado. Não houve
+instalação de ferramentas nem acesso a índices de pacotes nesta validação.
+As integrações antigas de migração continuam usando wheels artificiais locais.
+
+A revisão independente leu o diff, os chamadores, as regressões e a
+documentação, sem repetir a suíte ou os lints. O único apontamento documental
+(uma frase antiga negando a necessidade de Python do sistema) foi corrigido;
+não confirmou bloqueios no recorte A4. O patch incremental é conferido por
+bytes, tipos, links e bit executável sobre uma cópia nova da base; ele não
+transporta todos os metadados POSIX.
+
+Não foram executados CI, containers, instalações completas dos arquétipos,
+uv 0.9.0, falhas físicas de disco ou testes de concorrência. A validade das
+opções existentes de Ruff/pytest não é auditada por este compositor. A5/A6,
+R1, ds/jlab e project doctor ficam fora do recorte; seleção de versões e
+`target-version = "py312"` permanecem como antes.
+
+O checkout original e seu `.envrc` pessoal não recebem o patch. A candidata
+não contém os particulares. Não houve stage, commit, push, instalação de
+`pyinit`, mudança de gitlink/manifesto/lançadores ou atualização do Data Lab.
+As evidências de CI descritas em etapas anteriores são históricas e não
+validam remotamente os novos bytes A4.
+
 ## Reproduzir os checks locais
 
 ```bash

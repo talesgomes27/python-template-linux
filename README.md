@@ -12,7 +12,10 @@ Com o `uv`, os runtimes do Python são binários portáveis (*standalone builds*
 
 ## Pré-requisitos
 
-Apenas o binário do `uv` precisa estar instalado na máquina. Se ainda não possuir o `uv`, instale-o com um comando (sem sudo):
+Para sincronizar e usar o template, basta o binário do `uv`. O modo de criação
+do gerador também exige `/usr/bin/python3` >=3.11, com `tomllib` da biblioteca
+padrão, para compor configurações TOML. O gerador não instala nem altera esse
+Python do sistema. Se ainda não possuir o `uv`, instale-o com um comando (sem sudo):
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -58,7 +61,7 @@ uv run ruff format .
 
 ## Criar um novo projeto pelo gerador
 
-Na raiz deste template, execute com Bash, uv e os utilitários básicos Linux
+Na raiz deste template, execute com Bash, uv, `/usr/bin/python3` >=3.11 e os utilitários básicos Linux
 (incluindo `stat -c %h`, `mktemp`, `ln -T` e `realpath -m`, do coreutils) disponíveis:
 
 ```bash
@@ -75,6 +78,34 @@ preservados; não há chmod recursivo. Se o caminho já tiver um ancestral
 gravável por grupo/outros, como `775`, a integração do Data Lab Dotfiles ainda
 poderá recusá-lo. Revise somente os caminhos apontados pela guarda antes de
 alterar suas permissões.
+
+### Composição de Ruff e pytest
+
+As famílias `tool.ruff` e `tool.pytest` são tratadas independentemente. Se uma
+delas já existe como tabela, seu conteúdo inteiro é preservado: não há merge
+de chaves nem preenchimento de subopções. Isso inclui configurações Ruff
+somente em subtabelas e configurações pytest em `ini_options` ou diretamente
+em `tool.pytest`; a validade das opções de cada ferramenta continua sendo
+responsabilidade do projeto. Somente famílias ausentes recebem os padrões
+do gerador. A seleção de versões e o `target-version = "py312"` não mudam
+nesta correção.
+
+O Python do sistema roda com `-I -B`, sem importar código do projeto. `tomllib`
+lê o TOML de verdade, incluindo chaves citadas, pontuadas e tabelas inline;
+comentários e strings contendo nomes de tabelas não contam como configuração.
+O documento completo resultante é validado antes de acrescentar qualquer
+bloco, mantendo os bytes preexistentes, inclusive comentários e quebras de
+linha. Quando ambas as famílias já existem, essa etapa não grava o arquivo.
+
+Se uma tabela inline fechada impedir a inclusão de uma família ausente sem
+reescrever a configuração, a criação recusa e pede composição manual. TOML
+inválido ou `tool`, `tool.ruff` e `tool.pytest` com tipos incompatíveis também
+bloqueiam. A conferência inicial ocorre antes de criar diretórios ou chamar
+uv; depois das operações uv, o arquivo é lido e validado novamente antes da
+inclusão. Essa revalidação não é uma transação contra alterações concorrentes,
+e uma falha posterior pode deixar etapas uv já concluídas.
+
+### Preservação de configurações e isolamento
 
 Antes de criar diretórios ou chamar uv para instalar/fixar Python, inicializar,
 adicionar dependências ou sincronizar, o gerador inspeciona
@@ -120,8 +151,8 @@ e usar cache fora do projeto continuam sendo efeitos previstos.
 
 Antes das mutações, a criação recusa qualquer `pyproject.toml` ancestral,
 inclusive um projeto pai sem workspace. Essa política conservadora evita
-descoberta e alterações implícitas no pai sem acrescentar um parser TOML ou
-exigir Python do sistema para criar projetos. Escolha um destino independente
+descoberta e alterações implícitas no pai; o TOML dos ancestrais não é
+interpretado. Escolha um destino independente
 ou administre explicitamente o projeto/workspace com uv. `init` usa
 `--no-workspace` e `python pin` usa `--no-project`; `add` e `sync` recebem o
 Python solicitado. Essas opções foram conferidas na fonte oficial do uv 0.9.0

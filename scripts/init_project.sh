@@ -68,6 +68,8 @@ Configuracoes IDE/R regulares de vinculo unico sao preservadas.
 Symlinks, hardlinks e tipos inesperados nesses destinos bloqueiam antes do uv.
 Criacao usa a .venv local; projetos pais e ambientes redirecionados sao recusados.
 Criacao recusa caminhos fisicos terminados em LF, inclusive destino . e aliases.
+Criacao exige /usr/bin/python3 >=3.11 para compor Ruff/pytest com tomllib.
+Configuracoes Ruff/pytest existentes sao preservadas; somente familias ausentes recebem padroes.
 Falhas podem preservar etapas anteriores; nao ha rollback automatico da criacao.
 Git pode ser inicializado, sem stage, commit ou push automatico.
 EOF
@@ -238,6 +240,75 @@ write_creation_config() {
         # ln -T sem force recusa qualquer destino existente, inclusive FIFO/link.
         ln -T -- "$temporary/content" "$file"
     ) || fail "Conflito em $1: criacao exclusiva recusada; configuracao existente preservada."
+}
+
+configure_creation_tools() {
+    /usr/bin/python3 -I -B - "$1" "$2" <<'PYINIT_TOOLS'
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    print("Erro: a criacao exige /usr/bin/python3 >=3.11 com tomllib.", file=sys.stderr)
+    sys.exit(2)
+
+path = Path(sys.argv[1])
+mode = sys.argv[2]
+try:
+    if mode == "check" and not path.is_file():
+        sys.exit(0)
+    original = path.read_bytes()
+    document = tomllib.loads(original.decode("utf-8"))
+    tool = document.get("tool", {})
+    if not isinstance(tool, dict):
+        raise ValueError("tool deve ser uma tabela; revise a configuracao manualmente")
+    for name in ("ruff", "pytest"):
+        if name in tool and not isinstance(tool[name], dict):
+            raise ValueError(
+                f"tool.{name} deve ser uma tabela; revise a configuracao manualmente"
+            )
+    defaults = {
+        "ruff": """
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+""",
+        "pytest": """
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra -q --strict-markers"
+""",
+    }
+    addition = "".join(block for name, block in defaults.items() if name not in tool)
+    if addition:
+        try:
+            tomllib.loads(original.decode("utf-8") + addition)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(
+                "composicao exige reescrever tabelas existentes "
+                "(por exemplo inline); revise manualmente"
+            ) from exc
+    if mode == "apply":
+        if addition:
+            with path.open("ab") as stream:
+                stream.write(addition.encode("utf-8"))
+        for name in defaults:
+            state = "preservado" if name in tool else "configuracao padrao criada"
+            print(f"  {name}: {state}.")
+except (OSError, UnicodeError, ValueError) as exc:
+    print(f"Erro: {path}: composicao Ruff/pytest recusada: {exc}", file=sys.stderr)
+    sys.exit(2)
+PYINIT_TOOLS
 }
 
 maintain_project() {
@@ -1558,6 +1629,8 @@ creation_project=${creation_project%$'\n.'}
 [[ "$creation_project" != *$'\n' ]] || fail "Caminho fisico terminado em LF nao suportado; nenhuma chamada uv foi executada."
 inspect_creation_scope
 inspect_creation_venv
+[[ -x /usr/bin/python3 ]] || fail "Criacao exige /usr/bin/python3 >=3.11 com tomllib."
+configure_creation_tools "$TARGET_DIR/pyproject.toml" check
 
 echo "==> Configurando projeto Python..."
 echo "    Diretorio: $TARGET_DIR"
@@ -1615,28 +1688,9 @@ case "$ARCHETYPE" in
         ;;
 esac
 
-# 7. Injetar configuracoes do Ruff e Pytest no pyproject.toml se ausentes
-if ! grep -q '\[tool\.ruff\]' pyproject.toml; then
-    cat >>pyproject.toml <<'EOF'
-
-[tool.ruff]
-line-length = 88
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
-[tool.pytest.ini_options]
-minversion = "8.0"
-testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = "-ra -q --strict-markers"
-EOF
-fi
+# 7. Compor somente familias ausentes, sem reescrever configuracoes existentes.
+echo "==> Preparando configuracoes Ruff/pytest..."
+configure_creation_tools pyproject.toml apply
 
 # 8. Integracao com IDEs (VS Code e Positron)
 inspect_creation_configs .
