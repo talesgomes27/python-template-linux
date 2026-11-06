@@ -1,5 +1,79 @@
 # Validação do gerador
 
+## Correção A6 — inferência do alvo Ruff — 2026-11-06
+
+Candidata isolada sobre `c875362eca362ac0b97964e174bdaee1798a40dc`, sem
+aplicação no checkout, instalação de `pyinit` ou atualização do Data Lab.
+Removido `target-version = "py312"` do template e dos novos blocos Ruff do
+gerador. Na descoberta automática, a escolha do alvo é delegada às regras de
+inferência do Ruff a partir de `project.requires-python`, sem implementar um
+resolvedor completo de restrições PEP 440. O requisito do pacote continua
+`>=3.10`; seleção de runtime, pin, lock, dependências e configurações Ruff
+preexistentes não foram alterados.
+
+O ajuste P3 desta revisão é somente documental. Código, configuração e testes
+permanecem idênticos aos da candidata A6 anterior; os resultados abaixo são
+evidências anteriores reaproveitadas, sem nova execução neste ajuste.
+
+Validação local com Ruff 0.17.1, uv 0.13.5, CPython gerenciado 3.12.15 para
+pytest/integrações e Python do sistema 3.14.4 para o gerador, com HOME/XDG/cache
+temporários:
+
+- Baseline: **232 testes aprovados**, sem skips.
+- Sete casos novos executam Ruff real por descoberta automática, sem
+  `--config` nem `--target-version`. Cobrem o próprio template, projetos
+  existentes com pisos 3.10/3.11/3.12/3.13, família Ruff parcial preservada e
+  alvo explícito `py39` preservado. A regra UP036 distingue o piso esperado
+  do minor seguinte por diagnósticos reais, sem analisar o texto de
+  `--show-settings`. Os casos do gerador simulam uv; não instalam os runtimes
+  desses pisos. O pedido de runtime 3.13 não substitui o piso dos metadados.
+- Antes da correção, cinco dos sete novos casos falharam; os dois controles
+  de Ruff existente passaram. Quatro casos anteriores, ajustados para o
+  padrão sem alvo fixo, também falharam. Após a correção, os 16 casos
+  direcionados passaram. Os testes conferem preservação do manifesto e da
+  configuração existente.
+- A inferência de `py310` expôs dois I001 na classificação de `tomllib` pelo
+  isort. O template agora declara `extra-standard-library = ["tomllib"]`:
+  seus testes exigem Python >=3.11. Isso mantém o piso 3.10, a regra I001 e
+  os imports corretos, sem adicionar dependência ou propagar essa exceção
+  aos novos blocos do gerador. Ruff check passou após o ajuste.
+- Suíte completa: **239 testes aprovados, sem skips**, em 29,45 s, incluindo
+  as regressões A1–A5/A2-LF-01 e as integrações offline anteriores.
+- Oito cenários adicionais com Ruff real: reprodução UP046 no template
+  anterior (`py312`, diagnóstico), candidata (`py310`, sem diagnóstico),
+  piso 3.13, configurações explícitas, override CLI, `.ruff.toml` e um
+  projeto novo com `uv init`, `python pin` e `sync` reais offline. Neste
+  último, somente `python install` e `add` são simulados; o alvo inferido
+  foi `py312`, coerente com o projeto criado com CPython 3.12.15.
+- Nenhuma correção Ruff foi aplicada aos exemplos. Os diagnósticos UP046
+  que sugerem sintaxe PEP 695 estão marcados como correções inseguras.
+- Ruff check/format (20 arquivos), corpo Python da composição extraído e
+  conferido separadamente, ShellCheck, `shfmt -i 4 -ci -d`, `bash -n`, ajuda
+  e whitespace do patch aprovados.
+
+Limites: alvo explícito e prioridades de configuração do Ruff continuam
+valendo; projetos anteriores não são migrados automaticamente. No Ruff
+0.17.1 ensaiado, `--config pyproject.toml` respeitou o requisito desse arquivo,
+mas `--config ruff.toml` sem alvo deixou o alvo não resolvido e não buscou o
+requisito vizinho. A descoberta automática é o caminho coberto pela correção;
+outros modos devem ser conferidos com `--show-settings`. A documentação geral
+de inferência não substitui essa verificação na versão em uso.
+
+Na revisão independente anterior, Ruff 0.17.1 resolveu
+`requires-python = ">=3.10,>=3.13"` como `py310`, apesar de a conjunção exigir
+Python >=3.13. Esse limite do algoritmo upstream também é delegado por A6;
+os testes de pisos simples não certificam resolução geral de requisitos
+compostos. O README agora explicita esse limite e orienta conferir o alvo
+efetivo com `--show-settings`.
+
+O pré-requisito `/usr/bin/python3` >=3.11 permanece; a versão mínima declarada
+de Ruff não foi aumentada. Somente Ruff 0.17.1 foi executado nesta validação,
+sem certificar todas as versões admitidas por `ruff>=0.8.0`. Não foram
+executados CI remota, containers, downloads ou instalação dos arquétipos.
+O patch Git é conferido por bytes, tipos, destinos de symlink e bit executável;
+os modos POSIX completos ficam no manifesto da candidata, pois o formato Git
+não representa todas essas permissões.
+
 ## Correção A5 — pedidos minor na migração — 2026-11-06
 
 Candidata isolada sobre `221c4a234517eaeafdfd074322489eb8afafa881`, sem

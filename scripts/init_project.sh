@@ -272,7 +272,6 @@ try:
         "ruff": """
 [tool.ruff]
 line-length = 88
-target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

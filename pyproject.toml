@@ -22,7 +22,6 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
 
 [tool.ruff.lint]
 select = [
@@ -33,6 +32,10 @@ select = [
     "UP",   # pyupgrade
 ]
 ignore = []
+
+[tool.ruff.lint.isort]
+# Os testes usam tomllib do Python >=3.11; o pacote conserva o piso 3.10.
+extra-standard-library = ["tomllib"]
 
 [tool.ruff.format]
 quote-style = "double"

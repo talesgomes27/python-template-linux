@@ -172,6 +172,83 @@ CONFIG_FILES = (".vscode/settings.json", ".Renviron", ".Rprofile")
 
 
 @pytest.mark.parametrize(
+    ("source", "requires_python", "configuration", "expected_minor"),
+    [
+        ("template", ">=3.10", "", 10),
+        ("generated", ">=3.10", "", 10),
+        ("generated", ">=3.11", "", 11),
+        ("generated", ">=3.12", "", 12),
+        ("generated", ">=3.13", "", 13),
+        ("generated", ">=3.10", '[tool.ruff.lint]\nselect = ["F"]\n', 10),
+        ("generated", ">=3.13", '[tool.ruff]\ntarget-version = "py39"\n', 9),
+    ],
+    ids=["template", "py310", "py311", "py312", "py313", "partial", "explicit"],
+)
+def test_ruff_target_follows_project_floor_or_existing_override(
+    config_creation: tuple[Path, dict[str, str]],
+    source: str,
+    requires_python: str,
+    configuration: str,
+    expected_minor: int,
+) -> None:
+    workspace, env = config_creation
+    ruff = shutil.which("ruff")
+    assert ruff, "Os testes de inferencia exigem Ruff instalado no ambiente de testes"
+    target = workspace / "ruff project"
+    target.mkdir()
+    manifest = target / "pyproject.toml"
+    if source == "template":
+        manifest.write_bytes((SCRIPT.parent.parent / "pyproject.toml").read_bytes())
+    else:
+        original = (
+            '[project]\nname = "sample"\nversion = "0.1.0"\n'
+            f'requires-python = "{requires_python}"\n' + configuration
+        ).encode()
+        manifest.write_bytes(original)
+        result = run_init(config_creation, target, "--python", "3.13")
+        assert result.returncode == 0, result.stderr
+        assert manifest.read_bytes().startswith(original)
+    before = manifest.read_bytes()
+    sample = target / "version_checks.py"
+    sample.write_text(
+        "import sys\n\n"
+        f"if sys.version_info < (3, {expected_minor}):\n"
+        '    print("older")\n'
+        f"if sys.version_info < (3, {expected_minor + 1}):\n"
+        '    print("next")\n'
+    )
+    # UP036 distingue o piso exato sem depender do formato de --show-settings.
+    checked = subprocess.run(
+        [
+            ruff,
+            "check",
+            "--no-cache",
+            "--select",
+            "UP036",
+            "--output-format",
+            "json",
+            str(sample),
+        ],
+        cwd=target,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert checked.returncode == 1, checked.stderr
+    assert [(d["code"], d["location"]["row"]) for d in json.loads(checked.stdout)] == [
+        ("UP036", 3)
+    ]
+    assert manifest.read_bytes() == before
+    data = tomllib.loads(before.decode())
+    assert data["project"]["requires-python"] == requires_python
+    if configuration:
+        assert data["tool"]["ruff"] == tomllib.loads(configuration)["tool"]["ruff"]
+    else:
+        assert "target-version" not in data["tool"]["ruff"]
+
+
+@pytest.mark.parametrize(
     ("configuration", "ruff", "pytest_config"),
     [
         ("", None, None),
@@ -230,7 +307,6 @@ def test_creation_tool_configuration_composes_missing_families(
         if ruff is not None
         else {
             "line-length": 88,
-            "target-version": "py312",
             "lint": {"select": ["E", "F", "I", "B", "UP"]},
             "format": {"quote-style": "double", "indent-style": "space"},
         }
