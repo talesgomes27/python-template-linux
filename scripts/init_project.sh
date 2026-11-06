@@ -487,7 +487,7 @@ def python_allows(spec: str, requested: str) -> bool:
     if len(actual) == 2:
         # Cada clausula muda de resultado somente nos limites de patch.
         boundaries = [int(p) for p in re.findall(r"\b\d+\.\d+\.(\d+)", spec)]
-        patches = {0} | {max(0, p + step) for p in boundaries for step in (-1, 0, 1)}
+        patches = {0, 1} | {max(0, p + step) for p in boundaries for step in (-1, 0, 1)}
         return any(python_allows(spec, requested + "." + str(p)) for p in patches)
     actual += (0,) * (3 - len(actual))
     for item in spec.split(","):

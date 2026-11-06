@@ -914,20 +914,39 @@ def test_competing_dev_requirements_are_not_silently_dropped(
         ("!=3.12.*", "3.12", False),
         (">=3.13", "3.12", False),
         (">=3.12.1,<3.13", "3.12.0", False),
+        (">3.12", "3.12", True),
+        ("!=3.12", "3.12", True),
+        (">3.12,<=3.12.1", "3.12", True),
+        (">3.12,<3.12.1", "3.12", False),
+        ("!=3.12,<=3.12", "3.12", False),
+        (">3.12,!=3.12.1,<3.12.2", "3.12", False),
+        (">3.12", "3.12.0", False),
+        ("!=3.12", "3.12.0", False),
+        (">3.12", "3.12.1", True),
+        ("!=3.12", "3.12.1", True),
     ],
 )
 def test_python_minor_request_checks_the_possible_patch_range(
     legacy: tuple[Path, dict[str, str]], requires: str, python: str, allowed: bool
 ) -> None:
-    project, _ = legacy
+    project, env = legacy
     (project / "pyproject.toml").write_text(
         '[project]\nname="old"\nversion="1"\ndependencies=[]\n'
         + "requires-python="
         + json.dumps(requires)
         + "\n"
     )
+    before = tree(Path(env["HOME"]))
     result = run(legacy, "--dry-run", "--python", python)
     assert result.returncode == (0 if allowed else 2), result.stderr
+    plan = json.loads(result.stdout)
+    if allowed:
+        assert plan["python"] == python
+        assert not plan["blockers"]
+    else:
+        assert plan["blockers"]
+    assert tree(Path(env["HOME"])) == before
+    assert not Path(env["TEST_LOG"]).exists()
 
 
 @pytest.mark.parametrize("extra", ["pytest", ["pytest"]])

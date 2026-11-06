@@ -1,5 +1,45 @@
 # Validação do gerador
 
+## Correção A5 — pedidos minor na migração — 2026-11-06
+
+Candidata isolada sobre `221c4a234517eaeafdfd074322489eb8afafa881`, sem
+aplicação no checkout independente, instalação de `pyinit` ou atualização do
+Data Lab. A alteração de comportamento limita-se a `python_allows` na migração:
+os candidatos de um pedido major.minor incluem `.0` e `.1`, além dos vizinhos
+dos limites de patch explícitos já considerados. Isso evita rejeitar `3.12`
+para `>3.12` e `!=3.12` por testar apenas `.0`. Não muda a comparação de pedidos
+com patch explícito nem as restrições declaradas pelo projeto.
+
+Validação local desta candidata, com HOME/XDG/cache temporários:
+
+- Baseline: 222 testes aprovados em CPython 3.12.15.
+- Dez casos acrescentados à regressão existente. Antes da correção, os dois
+  casos centrais falharam e 14 passaram. Depois, os 16 passaram: `>` e `!=`
+  sem patch, limites explícitos, intervalos vazios, exclusão `!=3.12.*` e
+  pedidos com patch explícito. Todos conferem dry-run sem alterações de
+  arquivos nem chamadas uv e preservação do pedido no plano quando aceito.
+- Suíte completa: **232 testes aprovados, sem skips**, em 25,22 s. Inclui as
+  sete integrações anteriores de migração com CPython gerenciado e uv real
+  offline, além das regressões de criação A1–A4/A2-LF-01.
+- Dois experimentos adicionais com uv 0.13.5 real, offline, sem dependências
+  nem downloads: `requires-python=">3.12"` e `"!=3.12"`, ambos com pedido
+  `--python 3.12`. A base recusou os dry-runs com retorno 2; a candidata
+  aceitou sem escrita/chamadas uv e, após confirmação em fixtures, realizou
+  um sync por caso com CPython 3.12.15. Foram preservados o manifesto, o
+  pedido minor em `.python-version` e o inode da antiga `.venv` no backup.
+- Ruff check/format (20 arquivos), corpo Python da migração extraído e
+  conferido separadamente com a configuração do projeto, ShellCheck,
+  `shfmt -i 4 -ci -d`, `bash -n`, ajuda e whitespace do patch aprovados.
+
+A correção não adiciona dependências; o requisito de `/usr/bin/python3`
+>=3.11 permanece. Nesta máquina, o Python do sistema que executa a migração
+é 3.14.4; 3.12.15 é o interpretador do pytest e das integrações gerenciadas.
+A existência de um patch compatível no cálculo não comprova que esse runtime
+esteja instalado: uv continua responsável por validar o interpretador real
+após a confirmação. A sintaxe conservadora de restrições suportada não foi
+ampliada. A6, a CI remota, containers e a distribuição pelo Data Lab não fazem
+parte desta candidata.
+
 ## Migração de legados — 2026-11-06
 
 A implementação de `--migrate [--dry-run] [--python VERSAO]` passou nas
