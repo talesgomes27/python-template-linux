@@ -5,6 +5,8 @@
 # ==============================================================================
 
 set -euo pipefail
+# Não herdar uma umask permissiva do terminal.
+umask 077
 
 UV_BIN="${UV_BIN:-$HOME/.local/bin/uv}"
 PYTHON_DEFAULT="3.12"
@@ -31,6 +33,11 @@ Exemplos:
   $(basename "$0") meu-projeto
   $(basename "$0") analise-vendas --archetype ds --python 3.12
   $(basename "$0") api-pedidos -a api -p 3.13
+
+Cria .envrc para Data Lab Dotfiles, preservando um arquivo existente.
+Revise-o e execute direnv allow . manualmente para habilitar a troca de ambiente.
+Novos arquivos/diretorios usam umask 077; permissoes existentes nao sao alteradas.
+Git pode ser inicializado, sem stage, commit ou push automatico.
 EOF
 }
 
@@ -182,7 +189,17 @@ EOF
 echo "==> Criando e sincronizando .venv..."
 "$UV_CMD" sync
 
-# 11. Ajustar .gitignore
+# 11. Preparar a integracao opcional com direnv sem conceder autorizacao.
+if [ -e ".envrc" ] || [ -L ".envrc" ]; then
+    echo "==> .envrc existente preservado; revise a integracao manualmente."
+else
+    (
+        set -o noclobber
+        printf '%s\n' 'use devshell_python' > .envrc
+    )
+fi
+
+# 12. Ajustar .gitignore
 if [ -f ".gitignore" ]; then
     if ! grep -q '\.Renviron' .gitignore; then
         cat >> .gitignore <<'EOF'
@@ -195,12 +212,10 @@ EOF
     fi
 fi
 
-# 12. Inicializar Git caso ainda nao exista
-if [ ! -d ".git" ] && command -v git &>/dev/null; then
+# 13. Inicializar Git caso ainda nao exista, inclusive em worktrees.
+if [ ! -e ".git" ] && [ ! -L ".git" ] && command -v git &>/dev/null; then
     echo "==> Inicializando repositorio Git..."
     git init -b main
-    git add .
-    git commit -m "feat: initialize python project with uv, ruff, pytest and ide settings"
 fi
 
 echo ""
@@ -214,6 +229,12 @@ echo "Como usar:"
 echo "  uv run pytest                     # Executar testes"
 echo "  uv run ruff check .               # Verificar linter"
 echo "  uv run python <script.py>         # Executar sem precisar de 'source venv'"
+echo ""
+echo "Troca automatica opcional (Data Lab Dotfiles + direnv):"
+echo "  Revise o .envrc completo; se ja existia, inclua use devshell_python quando apropriado."
+echo "  direnv allow .                   # Autorizacao manual apos a revisao"
+echo "  A troca ocorre no proximo prompt; ancestrais existentes precisam ser seguros."
+echo "Nenhum arquivo foi colocado em stage e nenhum commit ou push foi executado."
 echo ""
 echo "Compatibilidade de IDEs detectada:"
 echo "  - VS Code e Positron: .vscode/settings.json configurado."
