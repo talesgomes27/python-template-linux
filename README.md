@@ -98,7 +98,7 @@ direnv allow .
 
 A troca ocorre no próximo prompt: o terminal usa a `.venv` do projeto e
 restaura o ambiente anterior ao sair. Cada novo diretório precisa dessa
-autorização; o gerador não executa `direnv allow` nem configura whitelist.
+autorização; a criação normal não executa `direnv allow` nem configura whitelist.
 
 Se Git estiver disponível e o projeto ainda não tiver `.git`, ele será
 inicializado. Não há stage, commit ou push automático; a escolha dos arquivos
@@ -108,6 +108,73 @@ O Data Lab Dotfiles prepara o terminal, o uv e o ambiente pessoal `geral`.
 Este gerador prepara os arquivos e a `.venv` de cada projeto. Siga o
 [preparo do ambiente pessoal e da troca por projeto](https://github.com/talesgomes27/data-lab-dotfiles/blob/main/docs/SCIENCE.md#ambiente-pessoal-e-troca-automática-por-projeto)
 para conectar os dois fluxos; a autorização de cada `.envrc` continua manual.
+
+### Reparar e preparar um projeto existente
+
+O modo `--fix-permissions` delega ao comando `project fix-permissions` do
+Data Lab Dotfiles. Ele apresenta os diretórios e modos a corrigir, pede
+confirmação própria e registra os modos anteriores. Não usa chmod recursivo.
+O backend exige uma `.venv` existente: ambiente ausente ou inválido, symlinks
+nos diretórios, proprietários incorretos e problemas no caminho dos registros
+bloqueiam o reparo. Prepare ambientes ausentes pelo processo do projeto antes
+de usar esse modo.
+
+Disponibilize primeiro `devshell` no PATH pela
+[instalação do lançador no Data Lab](https://github.com/talesgomes27/data-lab-dotfiles/blob/main/docs/INSTALLATION.md#disponibilizar-devshell-no-path).
+Exemplo a partir deste template, após instalar o lançador:
+
+```bash
+# Somente diagnóstico/reparo de permissões, seguido de validação:
+bash scripts/init_project.sh /caminho/absoluto/projeto --fix-permissions
+
+# Acrescentar sincronização e autorização guiadas:
+bash scripts/init_project.sh /caminho/absoluto/projeto \
+    --fix-permissions --sync --allow-direnv
+```
+
+Se esta versão do gerador estiver instalada como `pyinit`, o mesmo exemplo
+funciona substituindo `bash scripts/init_project.sh` por `pyinit`.
+O gerador encontra a CLI pelo PATH. `DEVSHELL_BIN` permanece como override
+opcional, por exemplo `DEVSHELL_BIN=/caminho/data-lab-dotfiles/bin/devshell`,
+para indicar diretamente outro checkout. Os comandos de manutenção não
+instalam o lançador nem alteram a configuração da shell.
+
+| Opção | Comportamento |
+|---|---|
+| `--fix-permissions` | Repara somente diretórios elegíveis após a revisão do backend e valida a `.venv`. Não exige uv nem direnv. |
+| `--sync` | Exige `--fix-permissions` e `pyproject.toml`; mostra o comando e pede confirmação independente. Havendo `uv.lock`, executa `uv sync --locked`; lock desatualizado interrompe a operação. Sem lock, `uv sync` pode criá-lo. |
+| `--allow-direnv` | Exige `--fix-permissions`, direnv e `/usr/bin/python3`. Mostra o `.envrc` completo com controles escapados, pede uma confirmação específica, confere novamente conteúdo/metadados e só então executa `direnv allow .`. |
+
+As duas opções adicionais podem ser usadas juntas ou individualmente com
+`--fix-permissions`. `--python` e `--archetype` pertencem à criação e são
+recusadas no modo de manutenção. O diretório padrão é o atual; para outro,
+use caminho sem componentes `..`, conforme a guarda do Data Lab.
+
+O sync usa o interpretador existente, sem download de Python, e fixa o destino
+local `.venv` do projeto, ignorando `VIRTUAL_ENV`, `UV_PROJECT`, `UV_WORKING_DIR`
+e um `UV_PROJECT_ENVIRONMENT` herdado que poderia apontar para `geral`.
+Pode instalar/remover pacotes e executar builds; revise manifesto e dependências
+antes de confirmar. A `.venv` é validada novamente após a sincronização.
+Antes de reparar, `--sync` usa `uv workspace dir` em modo offline e sem cache
+para conferir o escopo. Exige uma versão do uv com esse subcomando e recusa
+membros cujo workspace esteja em uma pasta ancestral: o lock desse workspace
+deve ser administrado explicitamente, sem alteração indireta pelo reparo local.
+
+Esse modo não repete `uv init`, `uv add`, pin de Python, configuração de IDEs ou
+inicialização Git. Preserva o `.envrc` e não cria um arquivo ausente: nesse caso,
+prepare a integração manualmente. Na autorização guiada, symlinks, hardlinks,
+arquivo de outro proprietário ou gravável por grupo/outros são recusados.
+O reparo de diretórios não altera permissões do `.envrc`.
+
+Recusa, EOF ou falha interrompem as etapas seguintes. Reparos/sync já concluídos
+continuam aplicados; não há rollback de pacotes ou restauração automática de
+permissões inseguras. Depois, `direnv reload` repete a seleção; a ativação ocorre
+na shell, antes do próximo prompt. Autorizar `.envrc` permite executar seu
+conteúdo, por isso a confirmação não reutiliza a resposta do reparo.
+
+Esse preparo é explícito: abrir o terminal ou navegar entre pastas nunca
+executa reparos, sync ou autorização. Veja os testes e limites em
+[docs/VALIDATION.md](docs/VALIDATION.md).
 
 No Data Lab Dotfiles, o perfil `science` oferece a instalação do gerador como
 `pyinit`. O submódulo fixa o commit de origem e o instalador confere o checksum
