@@ -1,5 +1,60 @@
 # Validação do gerador
 
+## Migração de legados — 2026-11-06
+
+A implementação de `--migrate [--dry-run] [--python VERSAO]` passou nas
+verificações locais:
+
+- 125 testes pytest em CPython 3.12.15, sem skips: 41 anteriores e 84 de migração.
+- Sete integrações com uv real offline: requirements, Conda, Poetry, Pipenv,
+  setuptools, PEP 621 e uv já fixado. HOME/XDG/cache e projetos são temporários;
+  o runtime uv previamente instalado é usado somente para leitura, sem download.
+- Wheel Python artificial instalada/importada por requirements e por
+  `tool.uv.sources`, verificando a conversão e a resolução real sem PyPI.
+- Preservação do inode da `.venv` antiga ligada a um Miniforge inexistente,
+  manifestos legados, configuração customizada e bytes de `uv.lock` existente.
+- Diagnóstico sem uv/escritas, versão padrão lida dos metadados de `geral`,
+  constraints/includes locais, grupos/extras, EOF/recusa, falha de sync,
+  isolamento de overrides herdados, repetição e backup privado em cada execução.
+- Bloqueios para symlinks/hardlinks, ancestrais inseguros, fontes/formatos
+  concorrentes, alteração após revisão e metadados dinâmicos não suportados.
+- Preservação de nomes/versões estáticos e diagnóstico posterior de projetos
+  Poetry já convertidos em uv; esquemas inválidos não produzem traceback.
+- Metadados uv graváveis por grupo/outros são copiados para modos privados
+  depois do backup e antes do sync, sem alterar os bytes. O plano anuncia os
+  reparos e o registro conserva os modos anteriores.
+- ShellCheck, shfmt, `bash -n`, Ruff check/format, ajuda e `git diff --check`.
+  O corpo Python incorporado também foi extraído e conferido com Ruff.
+
+A revisão independente encontrou cinco problemas materiais. Sete novas
+reproduções falharam antes das correções e passaram depois: falha intermediária
+na cópia do backup; mistura de dependências PEP 621/Poetry; Poetry include-groups;
+setup.py condicional, wrapper dinâmico e setup_requires; manifestos dev
+concorrentes. O preparo do backup agora participa do tratamento de falhas e sua
+proteção no `.gitignore` precede qualquer cópia privada. As semânticas de
+manifestos ainda não suportadas bloqueiam sem escrita.
+
+A revisão para publicação acrescentou 13 casos de regressão para quatro
+achados: requirements dev concorrentes com outro gerenciador, extras setuptools
+em string, pedido de Python major.minor tratado como patch zero e resolução
+relativa de `UV_BIN`/PATH. As reproduções falharam antes das correções; a suíte
+completa passou depois. O cenário PEP 621 com uv real também usa pedido sem
+patch e um piso de patch compatível com o runtime instalado. O uv continua
+responsável por validar o interpretador gerenciado disponível após confirmação.
+
+O registro de falha preserva os originais e a `.venv` anterior; a regra de backup
+no `.gitignore` e o reparo seguro da raiz permanecem. Foi injetada uma falha de
+cópia depois de um `.envrc` artificial, confirmando proteção do backup e estado
+`rolled-back` sem executar uv nem tocar o ambiente antigo.
+
+Estas verificações usam fixtures artificiais e não aplicam configuração na
+HOME nem migram repositórios reais. A instalação do `pyinit` é uma etapa
+separada. Esta evidência local não certifica conversão de todo YAML/Poetry/Pipenv
+nem equivalência científica; os [formatos suportados e recuperação](migration-recipe-for-agents.md)
+delimitam os casos aceitos. Os resultados remotos da matriz Python 3.11/3.12/3.13
+devem ser conferidos no workflow do PR correspondente; containers não foram
+repetidos nesta validação.
+
 ## Manutenção guiada — 2026-11-06
 
 As opções `--fix-permissions [--sync] [--allow-direnv]` foram exercitadas com
