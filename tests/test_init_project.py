@@ -6,6 +6,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,9 @@ def scaffold(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "            Path(target).mkdir(parents=True, exist_ok=True)\n"
         "            (Path(target) / ('unexpected-' + stage)).touch()\n"
         "if args[:2] == ['python', 'install']:\n"
+        "    if os.environ.get('TEST_PROJECT_AFTER_INSTALL'):\n"
+        "        Path('pyproject.toml').write_text(\n"
+        "            os.environ['TEST_PROJECT_AFTER_INSTALL'])\n"
         "    if os.environ.get('TEST_CONFIG_APPEARS'):\n"
         "        path = Path(os.environ['TEST_CONFIG_APPEARS'])\n"
         "        path.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -165,6 +169,171 @@ def config_creation(
 
 
 CONFIG_FILES = (".vscode/settings.json", ".Renviron", ".Rprofile")
+
+
+@pytest.mark.parametrize(
+    ("configuration", "ruff", "pytest_config"),
+    [
+        ("", None, None),
+        ("[tool.ruff]\nline-length = 101\n", {"line-length": 101}, None),
+        (
+            '[tool.pytest.ini_options]\naddopts = "-x"\ntestpaths = ["specs"]\n',
+            None,
+            {"ini_options": {"addopts": "-x", "testpaths": ["specs"]}},
+        ),
+        (
+            '[tool.ruff.lint]\nselect = ["F"]\n',
+            {"lint": {"select": ["F"]}},
+            None,
+        ),
+        ("[\"tool\" . 'ruff']\nline-length = 101\n", {"line-length": 101}, None),
+        (
+            'tool.ruff.line-length = 101\ntool.pytest.ini_options.addopts = "-x"\n',
+            {"line-length": 101},
+            {"ini_options": {"addopts": "-x"}},
+        ),
+        (
+            "tool = {ruff = {line-length = 101}, "
+            'pytest = {ini_options = {addopts = "-x"}}}\n',
+            {"line-length": 101},
+            {"ini_options": {"addopts": "-x"}},
+        ),
+        ('[tool.pytest]\naddopts = ["-x"]\n', None, {"addopts": ["-x"]}),
+        (
+            '# [tool.ruff]\nnote = """\n[tool.ruff]\n[tool.pytest.ini_options]\n"""\n',
+            None,
+            None,
+        ),
+    ],
+)
+def test_creation_tool_configuration_composes_missing_families(
+    config_creation: tuple[Path, dict[str, str]],
+    configuration: str,
+    ruff: dict | None,
+    pytest_config: dict | None,
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "existing project"
+    target.mkdir()
+    manifest = target / "pyproject.toml"
+    original = (
+        configuration + '[project]\nname = "sample"\nversion = "0.1.0"\n'
+    ).encode()
+    manifest.write_bytes(original)
+    result = run_init(config_creation, target)
+    assert result.returncode == 0, result.stderr
+    final = manifest.read_bytes()
+    assert final.startswith(original), "A composicao reescreveu configuracao existente"
+    data = tomllib.loads(final.decode())
+    assert data["tool"]["ruff"] == (
+        ruff
+        if ruff is not None
+        else {
+            "line-length": 88,
+            "target-version": "py312",
+            "lint": {"select": ["E", "F", "I", "B", "UP"]},
+            "format": {"quote-style": "double", "indent-style": "space"},
+        }
+    )
+    assert data["tool"]["pytest"] == (
+        pytest_config
+        if pytest_config is not None
+        else {
+            "ini_options": {
+                "minversion": "8.0",
+                "testpaths": ["tests"],
+                "pythonpath": ["src"],
+                "addopts": "-ra -q --strict-markers",
+            }
+        }
+    )
+    if ruff is not None and pytest_config is not None:
+        assert final == original
+
+
+@pytest.mark.parametrize("ending", ["crlf", "no-final-newline"])
+def test_creation_tool_configuration_preserves_original_bytes(
+    config_creation: tuple[Path, dict[str, str]], ending: str
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "existing project"
+    target.mkdir()
+    manifest = target / "pyproject.toml"
+    original = b'[tool.pytest.ini_options]\naddopts = "-x"\n'
+    original += b'[project]\nname = "sample"\nversion = "0.1.0"\n'
+    original = (
+        original.replace(b"\n", b"\r\n") if ending == "crlf" else original.rstrip(b"\n")
+    )
+    manifest.write_bytes(original)
+    result = run_init(config_creation, target)
+    assert result.returncode == 0, result.stderr
+    assert manifest.read_bytes().startswith(original)
+    data = tomllib.loads(manifest.read_text())
+    assert data["tool"]["pytest"]["ini_options"] == {"addopts": "-x"}
+    assert data["tool"]["ruff"]["lint"]["select"] == ["E", "F", "I", "B", "UP"]
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        'tool = "not a table"\n',
+        'tool.ruff = "not a table"\n',
+        "tool.pytest = []\n",
+        "tool = {ruff = {line-length = 101}}\n",
+        "[tool.pytest.ini_options\n",
+    ],
+)
+def test_creation_tool_configuration_refuses_uncomposable_toml_before_uv(
+    config_creation: tuple[Path, dict[str, str]], configuration: str
+) -> None:
+    workspace, env = config_creation
+    target = workspace / "existing project"
+    target.mkdir()
+    manifest = target / "pyproject.toml"
+    manifest.write_text(
+        configuration + '[project]\nname = "sample"\nversion = "0.1.0"\n'
+    )
+    before = config_snapshot(target)
+    result = run_init(config_creation, target)
+    assert result.returncode == 2, result.stderr
+    assert "pyproject.toml" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not Path(env["TEST_COMMAND_LOG"]).exists()
+    assert config_snapshot(target) == before
+
+
+@pytest.mark.parametrize(
+    "changed", ["[project\n", "tool = {ruff = {line-length = 101}}\n"]
+)
+def test_creation_tool_configuration_rechecks_before_appending(
+    config_creation: tuple[Path, dict[str, str]], changed: str
+) -> None:
+    workspace, env = config_creation
+    target = workspace / "existing project"
+    target.mkdir()
+    manifest = target / "pyproject.toml"
+    manifest.write_text('[project]\nname = "sample"\nversion = "0.1.0"\n')
+    env["TEST_PROJECT_AFTER_INSTALL"] = changed
+    result = run_init(config_creation, target)
+    assert result.returncode == 2, result.stderr
+    assert manifest.read_text() == changed
+    assert not (target / ".vscode").exists()
+    assert "Projeto configurado com sucesso" not in result.stdout
+
+
+def test_creation_tool_configuration_rerun_preserves_toml(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "new project"
+    first = run_init(config_creation, target)
+    assert first.returncode == 0, first.stderr
+    manifest = target / "pyproject.toml"
+    original, before = manifest.read_bytes(), manifest.stat()
+    second = run_init(config_creation, target)
+    assert second.returncode == 0, second.stderr
+    assert manifest.read_bytes() == original
+    assert manifest.stat() == before
 
 
 def config_snapshot(
@@ -717,11 +886,27 @@ def test_creation_uv_refuses_nested_venv_links_before_mutations(
     assert config_snapshot(workspace) == before
 
 
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        None,
+        "[tool.ruff]\nline-length = 101\n",
+        '[tool.pytest.ini_options]\naddopts = "-x"\n',
+        '[tool.ruff]\nline-length = 101\n[tool.pytest.ini_options]\naddopts = "-x"\n',
+    ],
+    ids=["new", "ruff-only", "pytest-only", "both"],
+)
 def test_creation_uv_real_offline_init_pin_and_sync(
-    scaffold: tuple[Path, dict[str, str]],
+    scaffold: tuple[Path, dict[str, str]], configuration: str | None
 ) -> None:
     workspace, env = scaffold
     target = workspace / "real-project"
+    if configuration is not None:
+        target.mkdir()
+        (target / "pyproject.toml").write_text(
+            '[project]\nname = "sample"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.11"\ndependencies = []\n' + configuration
+        )
     outside = workspace / "external study"
     outside.mkdir()
     (outside / "pyproject.toml").write_text("external manifest\n")
@@ -762,9 +947,16 @@ def test_creation_uv_real_offline_init_pin_and_sync(
         json.loads(line)
         for line in Path(env["TEST_COMMAND_LOG"]).read_text().splitlines()
     ]
-    assert any(c[0] == "init" and "--no-workspace" in c for c in calls)
+    assert any(c[0] == "init" and "--no-workspace" in c for c in calls) == (
+        configuration is None
+    )
     assert any(c[:2] == ["python", "pin"] and "--no-project" in c for c in calls)
     assert calls[-1][0] == "sync"
+    tool = tomllib.loads((target / "pyproject.toml").read_text())["tool"]
+    assert "ruff" in tool and "pytest" in tool
+    if configuration is not None:
+        for name, settings in tomllib.loads(configuration)["tool"].items():
+            assert tool[name] == settings
 
 
 @pytest.mark.parametrize(
