@@ -342,6 +342,27 @@ explícito (`uv add --group notebook jupyterlab`); esta mudança não os atualiz
 O `pyinit` distribuído pelo Data Lab só recebe a mudança após atualização
 aprovada de sua versão fixada e do instalador.
 
+### Planejar a criação e dispensar integrações
+
+`--dry-run` executa as mesmas conferências iniciais e mostra o plano — as
+chamadas uv em ordem e cada arquivo a criar ou preservar — sem criar
+diretórios nem chamar uv:
+
+```bash
+bash scripts/init_project.sh ../api-pedidos --archetype api --no-r --dry-run
+```
+
+| Opção | Efeito na criação |
+|---|---|
+| `--no-ide` | Não cria `.vscode/settings.json` nem inspeciona `.vscode`. |
+| `--no-r` | Não cria `.Renviron`/`.Rprofile` nem acrescenta as regras R ao `.gitignore`. |
+| `--no-git` | Não inicializa o repositório Git. |
+| `--version` | Mostra a versão do gerador, igual à do `pyproject.toml` deste template. |
+
+As três opções `--no-*` pertencem somente à criação e são recusadas nos
+demais modos. `UV_BIN` e o fallback no PATH consideram apenas arquivos
+executáveis; nomes de funções ou builtins da shell não são aceitos.
+
 ## Migrar um projeto legado
 
 O modo `--migrate` reconhece requirements/pip-tools, Conda, Poetry, Pipenv,
@@ -360,6 +381,25 @@ por uma regra no `.gitignore` que permanece mesmo após rollback.
 O `direnv allow .` continua manual. Formatos ambíguos, metadados dinâmicos e
 pacotes Conda sem equivalência revisada bloqueiam a migração.
 Consulte os [formatos, limites e recuperação](docs/migration-recipe-for-agents.md).
+
+Para desfazer uma migração concluída, liste os backups e restaure pelo ID:
+
+```bash
+bash scripts/init_project.sh /caminho/absoluto/projeto --list-backups
+bash scripts/init_project.sh /caminho/absoluto/projeto --restore ID --dry-run
+bash scripts/init_project.sh /caminho/absoluto/projeto --restore ID
+```
+
+A restauração mostra o plano, pede confirmação e devolve os arquivos
+gerenciados (`pyproject.toml`, `uv.lock`, `.python-version`, `.envrc`,
+`.gitignore`) e a `.venv` ao estado anterior; arquivos criados pela migração
+são removidos. Antes de substituir qualquer coisa, o estado atual desses
+arquivos e da `.venv` é copiado para `.pyinit-backups/ID/after-restore`,
+de modo que edições posteriores à migração não se perdem. Não usa uv, não
+afrouxa novamente as permissões da raiz e mantém a regra do `.gitignore`
+que protege os backups. Uma restauração interrompida no meio não é
+revertida automaticamente; confira `after-restore`. Durante a migração,
+SIGTERM e SIGHUP (terminal fechado) disparam o mesmo rollback do Ctrl+C.
 
 A versão do Python vem do ambiente `geral` quando disponível, com fallback
 3.12; `--python` permite escolher outra versão compatível. Na migração, um

@@ -51,6 +51,7 @@ def test_builder_refuses_module_containing_heredoc_delimiter(
         ("", False, ""),
         ("1.2.3", False, "==1.2.3"),
         (">=1.0 , <2", False, ">=1.0,<2"),
+        (">= 1.0, < 2", False, ">=1.0,<2"),
         ("^1.2.3", True, ">=1.2.3,<2.0.0"),
         ("^0.2.3", True, ">=0.2.3,<0.3.0"),
         ("^0.0.3", True, ">=0.0.3,<0.0.4"),

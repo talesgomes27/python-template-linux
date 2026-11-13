@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1752,3 +1753,130 @@ def test_rerun_keeps_gitignore_block_and_existing_tests(
     assert second.returncode == 0, second.stderr
     assert (target / ".gitignore").read_text() == ignore
     assert [p.name for p in (target / "tests").iterdir()] == ["test_real.py"]
+
+
+def test_version_flag_reports_project_version(
+    scaffold: tuple[Path, dict[str, str]],
+) -> None:
+    manifest = tomllib.loads((SCRIPT.parent.parent / "pyproject.toml").read_text())
+    result = run_init(scaffold, None, "--version")
+    assert result.returncode == 0
+    assert result.stdout == f"pyinit {manifest['project']['version']}\n"
+
+
+@pytest.mark.parametrize("archetype", ["universal", "ds", "api", "cli"])
+def test_creation_dry_run_changes_nothing_and_matches_real_commands(
+    config_creation: tuple[Path, dict[str, str]], archetype: str
+) -> None:
+    workspace, env = config_creation
+    target = workspace / "study"
+    args = ("--archetype", archetype, "--python", "3.13.11")
+    before = sorted(workspace.rglob("*"))
+    planned = run_init(config_creation, target, *args, "--dry-run")
+    assert planned.returncode == 0, planned.stderr
+    assert sorted(workspace.rglob("*")) == before
+    assert not Path(env["TEST_UV_DETAILS"]).exists()
+    assert "nada foi criado" in planned.stdout
+    assert f"Diretorio: {target} (sera criado)" in planned.stdout
+    commands = [
+        shlex.split(line)[1:]
+        for line in planned.stdout.splitlines()
+        if line.startswith("  uv ")
+    ]
+    for file in (*CONFIG_FILES, "tests/test_smoke.py", ".envrc"):
+        assert f"  {file}: criar" in planned.stdout
+    created = run_init(config_creation, target, *args)
+    assert created.returncode == 0, created.stderr
+    assert commands == [call["args"] for call in uv_details(env)]
+    again = run_init(config_creation, target, *args, "--dry-run")
+    assert again.returncode == 0, again.stderr
+    assert "(existente)" in again.stdout
+    assert " init " not in again.stdout
+    for file in (*CONFIG_FILES, "tests/", ".envrc"):
+        assert f"  {file}: preservar" in again.stdout
+    assert "Git: repositorio existente preservado" in again.stdout
+
+
+@pytest.mark.parametrize(
+    ("flags", "absent", "present"),
+    [
+        (("--no-ide",), [".vscode"], [".Renviron", ".Rprofile", ".git"]),
+        (("--no-r",), [".Renviron", ".Rprofile"], [".vscode/settings.json", ".git"]),
+        (("--no-git",), [".git"], [".vscode/settings.json", ".Renviron"]),
+        (
+            ("--no-ide", "--no-r", "--no-git"),
+            [".vscode", ".Renviron", ".Rprofile", ".git"],
+            ["pyproject.toml", "tests/test_smoke.py", ".envrc"],
+        ),
+    ],
+)
+def test_creation_opt_out_flags_skip_only_their_files(
+    config_creation: tuple[Path, dict[str, str]],
+    flags: tuple[str, ...],
+    absent: list[str],
+    present: list[str],
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "study"
+    result = run_init(config_creation, target, *flags)
+    assert result.returncode == 0, result.stderr
+    for name in absent:
+        assert not (target / name).exists(), name
+    for name in present:
+        assert (target / name).exists(), name
+    ignore = (target / ".gitignore").read_text()
+    assert (".Rproj.user/" in ignore) is ("--no-r" not in flags)
+    for name in absent:
+        assert f"{name}:" not in result.stdout
+
+
+def test_no_ide_ignores_unrelated_vscode_entry(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "study"
+    target.mkdir()
+    (target / ".vscode").write_text("arquivo do usuario\n")
+    refused = run_init(config_creation, target)
+    assert refused.returncode == 2
+    result = run_init(config_creation, target, "--no-ide")
+    assert result.returncode == 0, result.stderr
+    assert (target / ".vscode").read_text() == "arquivo do usuario\n"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--migrate", "--no-git"),
+        ("--fix-permissions", "--no-r"),
+        ("--list-backups", "--no-ide"),
+        ("--restore", "0" * 32, "--no-git"),
+        ("--restore", "0" * 32, "--migrate"),
+        ("--list-backups", "--python", "3.12"),
+        ("--list-backups", "--restore", "0" * 32),
+        ("--fix-permissions", "--dry-run"),
+        ("--restore",),
+    ],
+)
+def test_new_flags_refuse_incompatible_modes(
+    scaffold: tuple[Path, dict[str, str]], args: tuple[str, ...]
+) -> None:
+    workspace, env = scaffold
+    before = sorted(workspace.rglob("*"))
+    result = run_init(scaffold, None, *args)
+    assert result.returncode == 2
+    assert result.stderr.startswith("Erro: ")
+    assert sorted(workspace.rglob("*")) == before
+    assert not Path(env["TEST_UV_DETAILS"]).exists()
+
+
+def test_uv_bin_naming_a_shell_builtin_falls_back_to_path_uv(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, env = config_creation
+    chosen = env["UV_BIN"]
+    # "declare" existe apenas como builtin; nunca deve virar $PWD/declare.
+    env["UV_BIN"] = "declare"
+    result = run_init(config_creation, workspace / "study")
+    assert result.returncode == 0, result.stderr
+    assert {call["executable"] for call in uv_details(env)} == {chosen}

@@ -95,6 +95,18 @@ que ignora `.pyinit-backups/` no `.gitignore` permanecem, para proteger o backup
 O `.gitignore` original está em `files/.gitignore` no registro privado.
 Backups não são apagados automaticamente e cada execução usa um ID diferente.
 
+Ctrl+C, SIGTERM e SIGHUP (terminal fechado) disparam o mesmo rollback. Para
+desfazer uma migração concluída, ou recuperar uma execução que ficou `pending`,
+use `--list-backups` e `--restore ID` (com `--dry-run` para apenas revisar):
+os arquivos gerenciados e a `.venv` voltam ao estado anterior, e o estado
+substituído é guardado em `after-restore` dentro do mesmo backup.
+
+Ctrl+C, SIGTERM e SIGHUP (terminal fechado) disparam o mesmo rollback. Para
+desfazer uma migração concluída, ou recuperar uma execução que ficou `pending`,
+use `--list-backups` e `--restore ID` (com `--dry-run` para apenas revisar):
+os arquivos gerenciados e a `.venv` voltam ao estado anterior, e o estado
+substituído é guardado em `after-restore` dentro do mesmo backup.
+
 Após uma interrupção abrupta (SIGKILL, falta de energia/disco), confira o
 `manifest.json` e os caminhos antes de repetir. Se o estado estiver `pending`,
 não sobrescreva a `.venv`: preserve uma tentativa incompleta, restaure

@@ -3,9 +3,11 @@
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import time
 import tomllib
 import zipfile
 from collections.abc import Callable
@@ -982,3 +984,177 @@ def test_relative_uv_lookup_is_bound_to_the_callers_directory(
     assert result.returncode == 0, result.stderr
     assert not (project / "wrong-uv-executed").exists()
     assert Path(env["TEST_LOG"]).is_file()
+
+
+def run_mode(
+    legacy: tuple[Path, dict[str, str]], *args: str, answers: str = ""
+) -> subprocess.CompletedProcess[str]:
+    project, env = legacy
+    return subprocess.run(
+        ["bash", str(SCRIPT), str(project), *args],
+        env=env,
+        input=answers,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def migrated(legacy: tuple[Path, dict[str, str]], with_venv: bool) -> str:
+    project, _ = legacy
+    (project / "requirements.txt").write_text("requests>=2\n")
+    (project / ".gitignore").write_text("private-data/\n")
+    (project / ".python-version").write_text("3.11\n")
+    if with_venv:
+        (project / ".venv").mkdir()
+        (project / ".venv/old-file").write_text("preserve me\n")
+    result = run(legacy, "--python", "3.13.11", answers="s\n")
+    assert result.returncode == 0, result.stdout + result.stderr
+    return next((project / ".pyinit-backups").iterdir()).name
+
+
+@pytest.mark.parametrize("with_venv", [True, False])
+def test_restore_returns_project_to_state_before_migration(
+    legacy: tuple[Path, dict[str, str]], with_venv: bool
+) -> None:
+    project, _ = legacy
+    ident = migrated(legacy, with_venv)
+    backup = project / ".pyinit-backups" / ident
+    migrated_manifest = (project / "pyproject.toml").read_bytes()
+    (project / "pyproject.toml").write_bytes(migrated_manifest + b"# edited later\n")
+    listed = json.loads(run_mode(legacy, "--list-backups").stdout)
+    assert [(b["id"], b["status"], b["format"], b["python"]) for b in listed] == [
+        (ident, "complete", "requirements", "3.13.11")
+    ]
+    before = tree(project)
+    dry = run_mode(legacy, "--restore", ident, "--dry-run")
+    assert dry.returncode == 0, dry.stderr
+    plan = json.loads(dry.stdout)
+    assert plan["operation"] == "restore"
+    assert plan["files"] == {
+        "pyproject.toml": "remover (ausente antes da migracao)",
+        "uv.lock": "remover (ausente antes da migracao)",
+        ".python-version": "restaurar do backup",
+        ".envrc": "remover (ausente antes da migracao)",
+        ".gitignore": "restaurar do backup",
+    }
+    assert tree(project) == before
+    refused = run_mode(legacy, "--restore", ident, answers="n\n")
+    assert refused.returncode == 1
+    assert tree(project) == before
+
+    result = run_mode(legacy, "--restore", ident, answers="s\n")
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ("pyproject.toml", "uv.lock", ".envrc"):
+        assert not (project / name).exists(), name
+    assert (project / ".python-version").read_text() == "3.11\n"
+    assert (project / "requirements.txt").read_text() == "requests>=2\n"
+    assert (project / ".gitignore").read_text() == (
+        "private-data/\n# pyinit: backups privados de migracao\n.pyinit-backups/\n"
+    )
+    after = backup / "after-restore"
+    assert stat.S_IMODE(after.stat().st_mode) == 0o700
+    assert (after / "files/pyproject.toml").read_bytes().endswith(b"# edited later\n")
+    assert (after / "venv/pyvenv.cfg").is_file()
+    if with_venv:
+        assert (project / ".venv/old-file").read_text() == "preserve me\n"
+        assert not (backup / "venv-before").exists()
+    else:
+        assert not (project / ".venv").exists()
+    assert json.loads((backup / "manifest.json").read_text())["status"] == "restored"
+    again = run_mode(legacy, "--restore", ident, answers="s\n")
+    assert again.returncode == 2
+    assert "'restored' nao pode ser restaurado" in again.stderr
+
+
+@pytest.mark.parametrize(
+    ("ident", "message"),
+    [
+        ("../../etc", "ID de backup invalido"),
+        ("f" * 32, "Backup inexistente"),
+    ],
+)
+def test_restore_refuses_unknown_or_unsafe_backups(
+    legacy: tuple[Path, dict[str, str]], ident: str, message: str
+) -> None:
+    project, _ = legacy
+    migrated(legacy, True)
+    before = tree(project)
+    result = run_mode(legacy, "--restore", ident, answers="s\n")
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert tree(project) == before
+
+
+def test_restore_refuses_shared_backup_directory_and_changed_project(
+    legacy: tuple[Path, dict[str, str]], pyinit: Callable[[str], ModuleType]
+) -> None:
+    project, _ = legacy
+    ident = migrated(legacy, True)
+    module = pyinit("migrate")
+    plan, _ = module.plan_restore(project, ident)
+    (project / ".python-version").write_text("3.12\n")
+    with pytest.raises(module.Refused, match="mudou apos a revisao"):
+        module.apply_restore(plan)
+    assert not (project / ".pyinit-backups" / ident / "after-restore").exists()
+    (project / ".pyinit-backups").chmod(0o755)
+    result = run_mode(legacy, "--restore", ident, answers="s\n")
+    assert result.returncode == 2
+    assert "privado (0700)" in result.stderr
+    assert run_mode(legacy, "--list-backups").returncode == 2
+
+
+def test_list_backups_is_empty_without_migrations(
+    legacy: tuple[Path, dict[str, str]],
+) -> None:
+    project, _ = legacy
+    result = run_mode(legacy, "--list-backups")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+    assert list(project.iterdir()) == []
+
+
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGHUP])
+def test_termination_signals_roll_back_migration(
+    legacy: tuple[Path, dict[str, str]], number: signal.Signals
+) -> None:
+    project, env = legacy
+    (project / "requirements.txt").write_text("requests>=2\n")
+    old = project / ".venv"
+    old.mkdir()
+    inode = old.stat().st_ino
+    ready = project.parent / "sync-started"
+    fake = Path(env["UV_BIN"])
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "time.sleep(60)\n"
+    )
+    process = subprocess.Popen(
+        ["bash", str(SCRIPT), str(project), "--migrate", "--python", "3.13.11"],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write("s\n")
+    process.stdin.flush()
+    deadline = time.monotonic() + 20
+    while not ready.exists():
+        assert time.monotonic() < deadline and process.poll() is None
+        time.sleep(0.05)
+    os.killpg(process.pid, number)
+    _, stderr = process.communicate(timeout=20)
+    # O Bash que recebeu o mesmo sinal termina por ele apos o rollback do filho.
+    assert process.returncode != 0, stderr
+    assert "Migracao revertida" in stderr
+    assert "Operacao interrompida por sinal" in stderr
+    assert old.stat().st_ino == inode
+    assert not (project / "pyproject.toml").exists()
+    backup = next((project / ".pyinit-backups").iterdir())
+    assert json.loads((backup / "manifest.json").read_text())["status"] == "rolled-back"

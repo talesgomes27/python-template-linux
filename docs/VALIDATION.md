@@ -1,5 +1,19 @@
 # Validação do gerador
 
+## Novas opções do gerador (0.2.0) — 2026-11-13
+
+- Criação: `--dry-run` (plano sem criar nada nem chamar uv), `--no-ide`,
+  `--no-r`, `--no-git` e `--version`. Um teste compara, para os quatro
+  arquétipos, as chamadas uv do plano com as chamadas reais registradas.
+- Migração: `--list-backups` e `--restore ID` (com `--dry-run`), que guardam o
+  estado substituído em `after-restore`; SIGHUP passa a disparar o rollback,
+  como SIGTERM; restrições com espaço após o operador (`>= 1.0`) são aceitas.
+- `resolve_uv` usa `type -P`: somente arquivos executáveis, nunca builtins.
+- A validação do valor de `--python` na criação não foi alterada: caminhos de
+  interpretador continuam aceitos, pois as integrações offline dependem disso.
+- As chamadas `uv add` dos arquétipos foram reunidas em `archetype_additions`,
+  usada tanto pela execução quanto pelo plano.
+
 ## Extração do Python embutido — 2026-11-13
 
 O Python que vivia em três heredocs de `scripts/init_project.sh` passou para
