@@ -35,4 +35,4 @@ Este repositório adota a arquitetura canônica de Python moderno para Linux bas
 
 ## 4. Migração de Repositórios Legados
 
-Para instruções completas sobre como migrar projetos que utilizam `requirements.txt`, `pipenv`, `poetry` ou `environment.yml` para este padrão, consulte [MIGRATION_RECIPE_FOR_AGENTS.md](file:///home/tales/Documentos/github/python-template-linux/MIGRATION_RECIPE_FOR_AGENTS.md).
+Para instruções completas sobre como migrar projetos que utilizam `requirements.txt`, `pipenv`, `poetry` ou `environment.yml` para este padrão, consulte [docs/migration-recipe-for-agents.md](docs/migration-recipe-for-agents.md).

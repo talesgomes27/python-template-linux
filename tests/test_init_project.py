@@ -175,7 +175,7 @@ CONFIG_FILES = (".vscode/settings.json", ".Renviron", ".Rprofile")
 @pytest.mark.parametrize(
     ("source", "requires_python", "configuration", "expected_minor"),
     [
-        ("template", ">=3.10", "", 10),
+        ("template", ">=3.11", "", 11),
         ("generated", ">=3.10", "", 10),
         ("generated", ">=3.11", "", 11),
         ("generated", ">=3.12", "", 12),
@@ -1721,3 +1721,34 @@ def test_sync_refuses_workspace_member_before_repair_or_external_lock_write(
     assert not commands(env)
     assert (root / "uv.lock").read_bytes() == original_lock
     assert not (target / "uv.lock").exists()
+
+
+def test_unknown_archetype_is_refused_before_any_change(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, env = config_creation
+    target = workspace / "study"
+    result = run_init(config_creation, target, "--archetype", "bogus")
+    assert result.returncode == 2
+    assert "Arquetipo desconhecido 'bogus'" in result.stderr
+    assert not target.exists()
+    assert not Path(env["TEST_UV_DETAILS"]).exists()
+
+
+def test_rerun_keeps_gitignore_block_and_existing_tests(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "study"
+    first = run_init(config_creation, target)
+    assert first.returncode == 0, first.stderr
+    smoke = target / "tests/test_smoke.py"
+    assert "def test_smoke() -> None:" in smoke.read_text()
+    ignore = (target / ".gitignore").read_text()
+    assert ignore.count(".Rproj.user/\n") == 1
+    smoke.unlink()
+    (target / "tests/test_real.py").write_text("def test_real():\n    pass\n")
+    second = run_init(config_creation, target)
+    assert second.returncode == 0, second.stderr
+    assert (target / ".gitignore").read_text() == ignore
+    assert [p.name for p in (target / "tests").iterdir()] == ["test_real.py"]

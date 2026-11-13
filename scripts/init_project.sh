@@ -71,6 +71,7 @@ Criacao recusa caminhos fisicos terminados em LF, inclusive destino . e aliases.
 Criacao exige /usr/bin/python3 >=3.11 para compor Ruff/pytest com tomllib.
 Configuracoes Ruff/pytest existentes sao preservadas; somente familias ausentes recebem padroes.
 Falhas podem preservar etapas anteriores; nao ha rollback automatico da criacao.
+Sem tests/ existente, cria tests/test_smoke.py; arquetipo desconhecido e recusado.
 Git pode ser inicializado, sem stage, commit ou push automatico.
 EOF
 }
@@ -1286,10 +1287,14 @@ def atomic(path: Path, raw: bytes, mode: int = 0o600) -> None:
             os.unlink(name)
 
 
+BACKUP_IGNORE = b"# pyinit: backups privados de migracao\n.pyinit-backups/\n"
+
+
 def protect_backup_ignore(project: Path) -> None:
     path = project / ".gitignore"
     raw = path.read_bytes() if path.exists() else b""
-    block = b"# pyinit: backups privados de migracao\n.pyinit-backups/\n"
+    block = BACKUP_IGNORE
+    # A regra precisa ser a ultima para prevalecer sobre negacoes anteriores.
     if not raw.endswith(block):
         atomic(path, raw + (b"\n" if raw and not raw.endswith(b"\n") else b"") + block)
 
@@ -1340,15 +1345,15 @@ def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) 
             atomic(project / ".python-version", (plan["python"] + "\n").encode())
             if originals[".envrc"] is None:
                 atomic(project / ".envrc", b"use devshell_python\n")
-            ignore = (project / ".gitignore").read_bytes()
-            additions = [x for x in (b".venv/",) if x not in ignore.splitlines()]
-            if additions:
+            # Inserir antes do bloco final de backups, sem duplica-lo.
+            ignore = (project / ".gitignore").read_bytes().removesuffix(BACKUP_IGNORE)
+            if b".venv/" not in ignore.splitlines():
                 atomic(
                     project / ".gitignore",
                     ignore
                     + (b"\n" if ignore and not ignore.endswith(b"\n") else b"")
-                    + b"\n".join(additions)
-                    + b"\n",
+                    + b".venv/\n"
+                    + BACKUP_IGNORE,
                 )
             protect_backup_ignore(project)
             env = {
@@ -1557,6 +1562,10 @@ while [[ $# -gt 0 ]]; do
             INIT_OPTIONS=true
             ARCHETYPE_SET=true
             ARCHETYPE="$2"
+            case "$ARCHETYPE" in
+                universal | ds | api | cli) ;;
+                *) fail "Arquetipo desconhecido '$ARCHETYPE'; use universal, ds, api ou cli." ;;
+            esac
             shift 2
             ;;
         --migrate)
@@ -1683,9 +1692,6 @@ case "$ARCHETYPE" in
     universal)
         # Nenhuma dependencia extra alem das de dev
         ;;
-    *)
-        echo "Aviso: Arquetipo desconhecido '$ARCHETYPE'. Usando universal." >&2
-        ;;
 esac
 
 # 7. Compor somente familias ausentes, sem reescrever configuracoes existentes.
@@ -1722,6 +1728,21 @@ if (file.exists(".venv/bin/python")) {
 }
 EOF
 
+# 9b. Teste inicial: testpaths aponta para tests/; um diretorio existente e preservado.
+if [ ! -e tests ] && [ ! -L tests ]; then
+    mkdir -- tests
+    (
+        set -o noclobber
+        cat >tests/test_smoke.py <<'EOF'
+"""Teste inicial do projeto; substitua pelos testes reais."""
+
+
+def test_smoke() -> None:
+    assert True
+EOF
+    )
+fi
+
 # 10. Sincronizar ambiente virtual
 echo "==> Criando e sincronizando .venv..."
 creation_uv sync --python "$PYTHON_DEFAULT"
@@ -1739,7 +1760,7 @@ fi
 
 # 12. Ajustar .gitignore
 if [ -f ".gitignore" ]; then
-    if ! grep -q '\.Renviron' .gitignore; then
+    if ! grep -qxF '.Rproj.user/' .gitignore; then
         cat >>.gitignore <<'EOF'
 
 # RStudio e reticulate locais

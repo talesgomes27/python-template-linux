@@ -1,5 +1,25 @@
 # Validação do gerador
 
+## Correções de revisão e endurecimento do CI — 2026-11-13
+
+- `--archetype` desconhecido é recusado na leitura dos argumentos (código 2),
+  antes de qualquer chamada uv; antes havia apenas um aviso.
+- O bloco R do `.gitignore` usa `.Rproj.user/` como marcador e não é mais
+  duplicado a cada execução.
+- Projetos sem `tests/` recebem `tests/test_smoke.py`; um caminho existente
+  é preservado.
+- Na migração, `.venv/` é inserido antes do bloco final de backups, que
+  deixa de ser duplicado e continua sendo a última regra.
+- As integrações com uv real são puladas, em vez de falhar, quando o pytest
+  não roda em CPython gerenciado pelo uv.
+- O piso do template passa a `requires-python = ">=3.11"` (Python 3.10
+  encerrou o suporte em outubro de 2026); a exceção
+  `extra-standard-library = ["tomllib"]` foi removida. Os registros abaixo
+  descrevem o estado anterior.
+- CI: actions fixadas por SHA, uv fixado em 0.11.32, `permissions:
+  contents: read`, `persist-credentials: false`, `timeout-minutes` e
+  Dependabot semanal para actions e uv.
+
 ## Correção F1 — arquétipo ds e grupo notebook — 2026-11-06
 
 Candidata isolada sobre `54458190e7f70c71a3c2a509f1cae4a709e258a9`, sem

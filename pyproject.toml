@@ -3,7 +3,7 @@ name = "python-template-linux"
 version = "0.1.0"
 description = "Template universal e reprodutivo para projetos Python em Linux"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
@@ -32,10 +32,6 @@ select = [
     "UP",   # pyupgrade
 ]
 ignore = []
-
-[tool.ruff.lint.isort]
-# Os testes usam tomllib do Python >=3.11; o pacote conserva o piso 3.10.
-extra-standard-library = ["tomllib"]
 
 [tool.ruff.format]
 quote-style = "double"

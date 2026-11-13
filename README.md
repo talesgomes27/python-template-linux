@@ -93,7 +93,7 @@ O template e os novos blocos Ruff não fixam `target-version`. Na descoberta
 automática da configuração, a escolha do alvo é delegada às regras de
 inferência do Ruff a partir de `project.requires-python` no `pyproject.toml`
 do mesmo diretório. Nos casos simples verificados, o template com
-`requires-python = ">=3.10"` usa `py310` e um projeto com
+`requires-python = ">=3.11"` usa `py311` e um projeto com
 `requires-python = ">=3.13"` usa `py313`, mesmo quando o runtime selecionado
 é mais recente. O gerador não altera o requisito do projeto nem escolhe outro
 interpretador para esse fim.
@@ -113,11 +113,6 @@ não presuma o mesmo resultado nesses modos. Confira o alvo com
 `ruff check --show-settings arquivo.py` usando os mesmos argumentos da sua
 execução. Sem alvo explícito e sem `requires-python`, valem os padrões do Ruff.
 Consulte a [inferência e descoberta oficiais do Ruff](https://docs.astral.sh/ruff/configuration/#inferring-the-python-version).
-
-No próprio template, `tomllib` é listado como biblioteca padrão para o isort:
-os testes usam Python >=3.11, enquanto o pacote mantém seu piso declarado
-3.10. Isso só corrige a classificação de imports; não fixa o alvo do Ruff nem
-adiciona dependências aos projetos gerados.
 
 O Python do sistema roda com `-I -B`, sem importar código do projeto. `tomllib`
 lê o TOML de verdade, incluindo chaves citadas, pontuadas e tabelas inline;
@@ -229,6 +224,10 @@ direnv allow .
 A troca ocorre no próximo prompt: o terminal usa a `.venv` do projeto e
 restaura o ambiente anterior ao sair. Cada novo diretório precisa dessa
 autorização; a criação normal não executa `direnv allow` nem configura whitelist.
+
+Quando o projeto ainda não tem `tests/`, o gerador cria `tests/test_smoke.py`
+para que `uv run pytest` funcione de imediato; um `tests/` existente é
+preservado. Um arquétipo desconhecido é recusado antes de qualquer alteração.
 
 Se Git estiver disponível e o projeto ainda não tiver `.git`, ele será
 inicializado. Não há stage, commit ou push automático; a escolha dos arquivos
@@ -417,6 +416,7 @@ uv lock --upgrade
 ```text
 python-template-linux/
 ├── .github/workflows/ci.yml       # Esteira de CI testando Python 3.11, 3.12 e 3.13
+├── .github/dependabot.yml         # Atualizações semanais de actions e dependências uv
 ├── docs/                          # Documentação técnica e ADRs de arquitetura
 │   └── migration-recipe-for-agents.md # Receita detalhada para migração de repositórios legados
 ├── scripts/
