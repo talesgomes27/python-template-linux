@@ -1,5 +1,13 @@
 # Validação do gerador
 
+## Tipos em `scripts/` — 2026-11-13
+
+O mypy strict passa a cobrir também `scripts/` (o montador e os três módulos
+embutidos). Os 36 apontamentos de `migrate.py` foram resolvidos somente com
+anotações e estreitamentos equivalentes: `require(x is not None, msg)` virou
+`if x is None: raise Refused(msg)` onde o tipo precisava ser estreitado, com a
+mesma exceção e mensagem. Nenhuma mudança de comportamento pretendida.
+
 ## Tipos, equivalências Conda e política de segurança — 2026-11-13
 
 - Template: mypy em modo strict sobre `src/` (com `py.typed` e `TypedDict` em

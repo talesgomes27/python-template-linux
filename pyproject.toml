@@ -41,7 +41,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-files = ["src"]
+files = ["src", "scripts"]
 strict = true
 
 [tool.coverage.run]

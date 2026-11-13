@@ -20,6 +20,10 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
+from typing import Any
+
+# Dados lidos de TOML/JSON e planos serializaveis.
+Data = dict[str, Any]
 
 
 class Refused(Exception):
@@ -31,7 +35,7 @@ def require(condition: object, message: str) -> None:
         raise Refused(message)
 
 
-def fingerprint(path: Path) -> dict:
+def fingerprint(path: Path) -> Data:
     try:
         s = path.lstat()
     except FileNotFoundError:
@@ -124,7 +128,8 @@ def python_allows(spec: str, requested: str) -> bool:
         m = re.fullmatch(
             r"\s*(>=|<=|==|!=|>|<|~=)\s*(\d+(?:\.\d+){0,2})(\.\*)?\s*", item
         )
-        require(m is not None, "Restricao Python complexa; revise manualmente.")
+        if m is None:
+            raise Refused("Restricao Python complexa; revise manualmente.")
         op, raw, wildcard = m.groups()
         parts = tuple(map(int, raw.split(".")))
         target = parts + (0,) * (3 - len(parts))
@@ -179,14 +184,14 @@ def make_requirement(
             )
             markers = "; " + value["markers"]
         value = value.get("version", "*")
-    require(
-        isinstance(value, str),
-        f"Dependencia {name}: declaracao dinamica ou multipla nao suportada.",
-    )
+    if not isinstance(value, str):
+        raise Refused(
+            f"Dependencia {name}: declaracao dinamica ou multipla nao suportada."
+        )
     return name + extras + version_constraint(value, poetry) + markers, optional
 
 
-def static_setup(raw: bytes) -> dict:
+def static_setup(raw: bytes) -> Data:
     module = ast.parse(raw.decode())
     calls = []
     imported = False
@@ -207,10 +212,10 @@ def static_setup(raw: bytes) -> dict:
         elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
             require(isinstance(node.value.value, str), "setup.py dinamico.")
         else:
-            require(
-                isinstance(node, ast.Expr) and isinstance(node.value, ast.Call),
-                "setup.py condicional/dinamico exige revisao; nao foi executado.",
-            )
+            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
+                raise Refused(
+                    "setup.py condicional/dinamico exige revisao; nao foi executado."
+                )
             call = node.value
             require(
                 isinstance(call.func, ast.Name)
@@ -234,7 +239,7 @@ def static_setup(raw: bytes) -> dict:
         "Requisitos/hooks de build/teste setuptools exigem revisao manual.",
     )
     try:
-        return {k.arg: ast.literal_eval(k.value) for k in call.keywords}
+        return {str(k.arg): ast.literal_eval(k.value) for k in call.keywords}
     except (ValueError, TypeError):
         raise Refused(
             "setup.py nao literal exige revisao; nao foi executado."
@@ -330,19 +335,21 @@ def conda_equivalents(raw: bytes | None) -> dict[str, str]:
 
 def plan_migration(
     project: Path, python: str
-) -> tuple[dict, dict[str, bytes | None], bytes | None]:
+) -> tuple[Data, dict[str, bytes | None], bytes | None]:
     safe_directories(project, project)
     for parent in (project, *project.parents):
-        config = parent / "pyproject.toml"
-        if config.is_file():
-            require(not config.is_symlink(), "pyproject.toml simbolico nao permitido.")
-            data = tomllib.loads(config.read_text())
+        manifest = parent / "pyproject.toml"
+        if manifest.is_file():
             require(
-                "workspace" not in data.get("tool", {}).get("uv", {}),
+                not manifest.is_symlink(), "pyproject.toml simbolico nao permitido."
+            )
+            ancestor = tomllib.loads(manifest.read_text())
+            require(
+                "workspace" not in ancestor.get("tool", {}).get("uv", {}),
                 "Workspace uv exige migracao explicita separada.",
             )
     originals: dict[str, bytes | None] = {}
-    inputs: dict[str, dict] = {}
+    inputs: dict[str, Data] = {}
 
     def read(name: str) -> bytes | None:
         require(
@@ -422,10 +429,10 @@ def plan_migration(
     extras: dict[str, list[str]] = {}
     constraints: list[str] = []
     default_groups = None
-    metadata = {}
+    metadata: Data = {}
     requires = ""
     raw_project = originals["pyproject.toml"]
-    config = tomllib.loads(raw_project.decode()) if raw_project else {}
+    config: Data = tomllib.loads(raw_project.decode()) if raw_project else {}
     project_config = config.get("project", {})
     poetry = config.get("tool", {}).get("poetry")
     kinds = []
@@ -517,15 +524,17 @@ def plan_migration(
         groups = config.get("dependency-groups", {})
         requires = project_config.get("requires-python", "")
     elif kind in ("poetry", "pipenv"):
-        data = (
+        pipfile, pipfile_lock = originals["Pipfile"], originals["Pipfile.lock"]
+        data: Data = (
             poetry
             if kind == "poetry"
             else (
-                tomllib.loads(originals["Pipfile"].decode())
-                if originals["Pipfile"] is not None
-                else json.loads(originals["Pipfile.lock"])
+                tomllib.loads(pipfile.decode())
+                if pipfile is not None
+                else json.loads(pipfile_lock or b"")
             )
         )
+        main: Any
         if kind == "poetry":
             metadata = data
             require(
@@ -653,7 +662,7 @@ def plan_migration(
                     k: v.splitlines() for k, v in cfg.items("options.extras_require")
                 }
         else:
-            values = static_setup(originals["setup.py"])
+            values = static_setup(originals["setup.py"] or b"")
             metadata = values
             deps = values.get("install_requires", [])
             requires = values.get("python_requires", "")
@@ -690,11 +699,12 @@ def plan_migration(
             "sao separada."
         )
 
-    def requirements(name: str, stack: tuple = ()) -> list[str]:
+    def requirements(name: str, stack: tuple[str, ...] = ()) -> list[str]:
         require(name not in stack, "Inclusao circular em requirements.")
         raw = read(name)
-        require(raw is not None, f"Requirements ausente: {name}")
-        result = []
+        if raw is None:
+            raise Refused(f"Requirements ausente: {name}")
+        result: list[str] = []
         for line in raw.decode().replace("\\\n", " ").splitlines():
             line = re.split(r"\s+#", line.strip(), maxsplit=1)[0].strip()
             if not line or line.startswith("#"):
@@ -762,7 +772,7 @@ def plan_migration(
             originals["environment.yml"]
             if originals["environment.yml"] is not None
             else originals["environment.yaml"]
-        )
+        ) or b""
         section = ""
         pip_indent = None
         packages = conda_equivalents(read(CONDA_MAP_FILE))
@@ -807,7 +817,8 @@ def plan_migration(
             pip_indent = None
             item = item.strip("\"'")
             match = re.fullmatch(r"([A-Za-z0-9_.-]+)\s*([=<>!~].*)?", item)
-            require(match is not None, "Especificacao Conda complexa exige revisao.")
+            if match is None:
+                raise Refused("Especificacao Conda complexa exige revisao.")
             name, spec = match.groups()
             spec = spec or ""
             if spec.startswith("=") and not spec.startswith("=="):
@@ -922,7 +933,7 @@ def plan_migration(
             ".envrc existente sera preservado; revise o conteudo e"
             " suas permissoes antes de direnv allow."
         )
-    plan = dict(
+    plan: Data = dict(
         operation="migrate",
         project=str(project),
         format=kind,
@@ -981,7 +992,9 @@ def protect_backup_ignore(project: Path) -> None:
         atomic(path, raw + (b"\n" if raw and not raw.endswith(b"\n") else b"") + block)
 
 
-def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) -> Path:
+def apply_migration(
+    plan: Data, originals: dict[str, bytes | None], output: bytes | None, uv: str
+) -> Path:
     project = Path(plan["project"])
     rootfd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -1020,8 +1033,9 @@ def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) 
             started = True
             # Metadados lidos pelo uv nao podem continuar gravaveis por outro UID.
             for name in ("pyproject.toml", "uv.lock"):
-                if originals[name] is not None and plan["inputs"][name]["mode"] & 0o022:
-                    atomic(project / name, originals[name])
+                original = originals[name]
+                if original is not None and plan["inputs"][name]["mode"] & 0o022:
+                    atomic(project / name, original)
             if output is not None:
                 atomic(project / "pyproject.toml", output)
             atomic(project / ".python-version", (plan["python"] + "\n").encode())
@@ -1147,7 +1161,7 @@ def private_directory(path: Path) -> bool:
     return True
 
 
-def list_backups(project: Path) -> list[dict]:
+def list_backups(project: Path) -> list[Data]:
     safe_directories(project, project)
     parent = project / ".pyinit-backups"
     if not private_directory(parent):
@@ -1180,7 +1194,7 @@ def list_backups(project: Path) -> list[dict]:
     return items
 
 
-def plan_restore(project: Path, ident: str) -> tuple[dict, dict]:
+def plan_restore(project: Path, ident: str) -> tuple[Data, Data]:
     require(
         bool(re.fullmatch(r"[0-9a-f]{32}", ident)),
         "ID de backup invalido; consulte --list-backups.",
@@ -1256,7 +1270,7 @@ def plan_restore(project: Path, ident: str) -> tuple[dict, dict]:
     return plan, record
 
 
-def apply_restore(plan: dict) -> Path:
+def apply_restore(plan: Data) -> Path:
     project = Path(plan["project"])
     rootfd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -1266,7 +1280,7 @@ def apply_restore(plan: dict) -> Path:
             current["approval"] == plan["approval"],
             "Projeto mudou apos a revisao; execute novamente.",
         )
-        backup = project / ".pyinit-backups" / plan["backup"]
+        backup: Path = project / ".pyinit-backups" / plan["backup"]
         inputs = record["plan"]["inputs"]
         after = backup / "after-restore"
         after.mkdir(mode=0o700)
@@ -1370,7 +1384,8 @@ def main() -> int:
     uv = shutil.which(
         os.environ.get("UV_BIN", str(Path.home() / ".local/bin/uv"))
     ) or shutil.which("uv")
-    require(uv is not None, "uv ausente; instale-o explicitamente antes de migrar.")
+    if uv is None:
+        raise Refused("uv ausente; instale-o explicitamente antes de migrar.")
     uv = os.path.abspath(uv)
     print(
         (
