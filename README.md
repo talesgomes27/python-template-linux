@@ -425,6 +425,7 @@ python-template-linux/
 ├── tests/                         # Testes unitários com pytest
 ├── .gitignore                     # Filtro de arquivos efêmeros
 ├── .python-version                # Versão ativa do interpretador (ex: 3.12)
+├── LICENSE                        # Licença MIT
 ├── AGENTS.md                      # Regras operacionais para agentes e LLMs
 ├── MIGRATION_RECIPE_FOR_AGENTS.md # Atalho para o playbook de migração para IAs
 ├── pyproject.toml                 # Metadados e configurações (Ruff, Pytest)

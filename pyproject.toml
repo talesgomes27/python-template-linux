@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Template universal e reprodutivo para projetos Python em Linux"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
 
 [project.scripts]
