@@ -3,9 +3,9 @@
 ## Documentação, CI e automação gerada — 2026-11-13
 
 - README reduzido a um resumo de uso; o detalhe do gerador foi movido, sem
-  alteração de conteúdo, para `docs/generator.md`. A receita de migração
-  duplicada na raiz virou um ponteiro e os artefatos de planejamento
-  concluídos foram para `docs/archive/`.
+  alteração de conteúdo, para `docs/generator.md`. Os artefatos de
+  planejamento concluídos foram para `docs/archive/`. A receita de migração
+  na raiz já era um symlink para `docs/`, sem duplicação, e não mudou.
 - CI: Python 3.14 na matriz, job de ShellCheck e cobertura mínima de 90% no
   pacote. A cobertura não mede `scripts/pyinit`, exercitado sobretudo por
   subprocessos do gerador.

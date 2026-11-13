@@ -204,7 +204,7 @@ python-template-linux/
 ├── .python-version                # Versão ativa do interpretador (ex: 3.12)
 ├── LICENSE                        # Licença MIT
 ├── AGENTS.md                      # Regras operacionais para agentes e LLMs
-├── MIGRATION_RECIPE_FOR_AGENTS.md # Ponteiro para docs/migration-recipe-for-agents.md
+├── MIGRATION_RECIPE_FOR_AGENTS.md # Symlink para docs/migration-recipe-for-agents.md
 ├── pyproject.toml                 # Metadados e configurações (Ruff, Pytest)
 └── README.md
 ```
