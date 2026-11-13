@@ -55,7 +55,7 @@ uv run pytest
 # Verificar conformidade de linter (Ruff)
 uv run ruff check .
 
-# Verificar tipos (mypy, modo strict no pacote)
+# Verificar tipos (mypy, modo strict no pacote e em scripts/)
 uv run mypy
 
 # Formatar o código automaticamente
