@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -100,8 +101,8 @@ def version_constraint(value: str, poetry: bool = False) -> str:
         bool(
             re.fullmatch(
                 (
-                    "(?:===|==|!=|~=|>=|<=|>|<)[\\w.*+!-]+(?:\\s*,\\s*(?:"
-                    "===|==|!=|~=|>=|<=|>|<)[\\w.*+!-]+)*"
+                    "(?:===|==|!=|~=|>=|<=|>|<)\\s*[\\w.*+!-]+(?:\\s*,\\s*(?:"
+                    "===|==|!=|~=|>=|<=|>|<)\\s*[\\w.*+!-]+)*"
                 ),
                 value,
             )
@@ -916,6 +917,9 @@ def atomic(path: Path, raw: bytes, mode: int = 0o600) -> None:
             os.unlink(name)
 
 
+# Arquivos que a migracao pode criar ou regravar na raiz do projeto.
+MANAGED = ("pyproject.toml", "uv.lock", ".python-version", ".envrc", ".gitignore")
+LIMIT = 5 * 1024 * 1024
 BACKUP_IGNORE = b"# pyinit: backups privados de migracao\n.pyinit-backups/\n"
 
 
@@ -1045,13 +1049,7 @@ def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) 
             if moved:
                 os.rename(backup / "venv-before", project / ".venv")
             if started:
-                for name in (
-                    "pyproject.toml",
-                    "uv.lock",
-                    ".python-version",
-                    ".envrc",
-                    ".gitignore",
-                ):
+                for name in MANAGED:
                     raw = originals[name]
                     if raw is None:
                         (project / name).unlink(missing_ok=True)
@@ -1075,8 +1073,215 @@ def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) 
         os.close(rootfd)
 
 
+def read_private(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        s = os.fstat(f.fileno())
+        require(
+            stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid() and s.st_nlink == 1,
+            f"Arquivo deve ser regular, proprio, sem symlink/hardlink: {path.name}",
+        )
+        raw = f.read(LIMIT + 1)
+    require(len(raw) <= LIMIT, f"Arquivo grande demais para inspecao: {path.name}")
+    return raw
+
+
+def private_directory(path: Path) -> bool:
+    try:
+        s = path.lstat()
+    except FileNotFoundError:
+        return False
+    require(
+        stat.S_ISDIR(s.st_mode) and s.st_uid == os.getuid() and not s.st_mode & 0o077,
+        f"Diretorio de backups deve ser proprio e privado (0700): {path.name}",
+    )
+    return True
+
+
+def list_backups(project: Path) -> list[dict]:
+    safe_directories(project, project)
+    parent = project / ".pyinit-backups"
+    if not private_directory(parent):
+        return []
+    items = []
+    for entry in sorted(
+        parent.iterdir(), key=lambda p: (p.lstat().st_mtime_ns, p.name)
+    ):
+        if not re.fullmatch(r"[0-9a-f]{32}", entry.name):
+            continue
+        item = dict(
+            id=entry.name,
+            status="ilegivel",
+            modified=time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(entry.lstat().st_mtime)
+            ),
+        )
+        try:
+            private_directory(entry)
+            record = json.loads(read_private(entry / "manifest.json"))
+            plan = record["plan"]
+            item.update(
+                status=str(record["status"]),
+                format=str(plan["format"]),
+                python=str(plan["python"]),
+            )
+        except (Refused, OSError, ValueError, KeyError, TypeError):
+            pass
+        items.append(item)
+    return items
+
+
+def plan_restore(project: Path, ident: str) -> tuple[dict, dict]:
+    require(
+        bool(re.fullmatch(r"[0-9a-f]{32}", ident)),
+        "ID de backup invalido; consulte --list-backups.",
+    )
+    safe_directories(project, project)
+    backup = project / ".pyinit-backups" / ident
+    require(
+        private_directory(backup.parent) and private_directory(backup),
+        f"Backup inexistente: {ident}",
+    )
+    record = json.loads(read_private(backup / "manifest.json"))
+    require(
+        isinstance(record, dict)
+        and isinstance(record.get("plan"), dict)
+        and isinstance(record["plan"].get("inputs"), dict),
+        "Manifesto de backup invalido.",
+    )
+    status = record.get("status")
+    require(
+        status in ("complete", "pending"),
+        f"Backup com estado {status!r} nao pode ser restaurado.",
+    )
+    inputs = record["plan"]["inputs"]
+    files = {}
+    for name in MANAGED:
+        current = fingerprint(project / name)
+        if fingerprint(backup / "files" / name):
+            files[name] = "restaurar do backup"
+        elif inputs.get(name) == {} and current:
+            files[name] = "remover (ausente antes da migracao)"
+        else:
+            # Copia ausente de um original existente: a migracao nao o alterou.
+            files[name] = "manter"
+        require(
+            files[name] == "manter" or not current or stat.S_ISREG(current["mode"]),
+            f"Arquivo atual deve ser regular: {name}",
+        )
+    venv = fingerprint(project / ".venv")
+    require(
+        not venv or stat.S_ISDIR(venv["mode"]),
+        "Diretorio invalido ou simbolico: .venv",
+    )
+    if fingerprint(backup / "venv-before"):
+        environment = "restaurar a .venv anterior; a atual vai para o backup"
+    elif inputs.get(".venv") == {} and venv:
+        environment = "mover a .venv atual para o backup (ausente antes da migracao)"
+    else:
+        environment = "manter"
+    require(
+        not fingerprint(backup / "after-restore"),
+        "Backup ja contem after-restore; revise manualmente.",
+    )
+    plan = dict(
+        operation="restore",
+        project=str(project),
+        backup=ident,
+        status=status,
+        format=record["plan"].get("format"),
+        python=record["plan"].get("python"),
+        files=files,
+        environment=environment,
+        current={name: fingerprint(project / name) for name in (*MANAGED, ".venv")},
+        saved=".pyinit-backups/" + ident + "/after-restore",
+        warnings=[
+            "Arquivos atuais substituidos ou removidos sao copiados antes para "
+            "after-restore; nao ha reversao automatica de uma restauracao parcial.",
+            "Permissoes da raiz do projeto nao sao afrouxadas novamente.",
+        ],
+    )
+    plan["approval"] = hashlib.sha256(
+        json.dumps(plan, sort_keys=True).encode()
+    ).hexdigest()
+    return plan, record
+
+
+def apply_restore(plan: dict) -> Path:
+    project = Path(plan["project"])
+    rootfd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(rootfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        current, record = plan_restore(project, plan["backup"])
+        require(
+            current["approval"] == plan["approval"],
+            "Projeto mudou apos a revisao; execute novamente.",
+        )
+        backup = project / ".pyinit-backups" / plan["backup"]
+        inputs = record["plan"]["inputs"]
+        after = backup / "after-restore"
+        after.mkdir(mode=0o700)
+        (after / "files").mkdir(mode=0o700)
+        changed = [n for n in MANAGED if plan["files"][n] != "manter"]
+        # Nada e substituido antes de todas as copias do estado atual existirem.
+        for name in changed:
+            if fingerprint(project / name):
+                atomic(after / "files" / name, read_private(project / name))
+        venv = project / ".venv"
+        if plan["environment"] != "manter":
+            if venv.exists():
+                os.rename(venv, after / "venv")
+            if (backup / "venv-before").exists():
+                os.rename(backup / "venv-before", venv)
+        for name in changed:
+            if plan["files"][name].startswith("remover"):
+                (project / name).unlink(missing_ok=True)
+                continue
+            mode = inputs.get(name, {}).get("mode", 0o600)
+            if name in ("pyproject.toml", "uv.lock"):
+                mode &= ~0o022
+            atomic(project / name, read_private(backup / "files" / name), mode)
+        protect_backup_ignore(project)
+        record["status"] = "restored"
+        atomic(backup / "manifest.json", (json.dumps(record, indent=2) + "\n").encode())
+        return after
+    finally:
+        os.close(rootfd)
+
+
+def confirmed(question: str) -> bool:
+    print(question + " [s/N] ", end="", file=sys.stderr, flush=True)
+    answer = os.fdopen(3).readline()
+    return answer.endswith("\n") and answer.strip().lower() in ("s", "sim")
+
+
+def restore(project: Path, ident: str, dry: bool) -> int:
+    plan, _ = plan_restore(project, ident)
+    print(json.dumps(plan, indent=2, ensure_ascii=False), flush=True)
+    if dry:
+        return 0
+    if not confirmed(
+        "Restaurar este backup? Arquivos e .venv atuais listados serao "
+        "substituidos; copias ficam em after-restore."
+    ):
+        print("Restauracao cancelada; nenhum arquivo alterado.", file=sys.stderr)
+        return 1
+    after = apply_restore(plan)
+    print(
+        f"Restauracao concluida. Estado anterior a ela: {after}\n"
+        "Nenhum stage, commit ou push foi executado."
+    )
+    return 0
+
+
 def main() -> int:
     project = Path(os.path.abspath(sys.argv[1]))
+    action = sys.argv[4] if len(sys.argv) > 4 else "migrate"
+    if action == "list":
+        print(json.dumps(list_backups(project), indent=2, ensure_ascii=False))
+        return 0
+    if action == "restore":
+        return restore(project, sys.argv[5], sys.argv[3] == "true")
     python = sys.argv[2]
     dry = sys.argv[3] == "true"
     if not python:
@@ -1145,9 +1350,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        signal.signal(
-            signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt())
-        )
+        # Encerramento e terminal fechado seguem o mesmo rollback do Ctrl+C.
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
         sys.exit(main())
     except (
         Refused,
@@ -1164,12 +1369,18 @@ if __name__ == "__main__":
         message = (
             str(exc)
             if isinstance(exc, (Refused, OSError, subprocess.CalledProcessError))
+            else "Operacao interrompida por sinal."
+            if isinstance(exc, KeyboardInterrupt)
             else f"Arquivo invalido ({type(exc).__name__}); revise os manifestos."
         )
         if len(sys.argv) > 3 and sys.argv[3] == "true":
             print(
                 json.dumps(
-                    dict(operation="migrate", project=sys.argv[1], blockers=[message]),
+                    dict(
+                        operation=sys.argv[4] if len(sys.argv) > 4 else "migrate",
+                        project=sys.argv[1],
+                        blockers=[message],
+                    ),
                     ensure_ascii=False,
                 )
             )

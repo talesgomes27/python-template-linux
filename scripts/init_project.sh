@@ -23,6 +23,13 @@ MIGRATE=false
 DRY_RUN=false
 PYTHON_SET=false
 ARCHETYPE_SET=false
+CREATE_ONLY=false
+WITH_IDE=true
+WITH_R=true
+WITH_GIT=true
+RESTORE_ID=""
+LIST_BACKUPS=false
+PYINIT_VERSION="0.2.0"
 
 show_help() {
     cat <<EOF
@@ -38,13 +45,23 @@ Opcoes:
                            ds        : Data Science (polars, duckdb, pyarrow, ipykernel; JupyterLab no grupo notebook)
                            api       : Web APIs (fastapi, pydantic, httpx)
                            cli       : Linha de comando (typer, rich)
+  --no-ide               Nao cria .vscode/settings.json
+  --no-r                 Nao cria .Renviron/.Rprofile nem regras R no .gitignore
+  --no-git               Nao inicializa repositorio Git
+  --dry-run              Mostra o plano de criacao sem criar nada nem chamar uv
+  -V, --version          Exibe a versao do gerador
   -h, --help             Exibe esta mensagem de ajuda
 
 Migracao de projeto legado (Python do sistema >=3.11):
   --migrate              Detecta formato, revisa plano e migra com backup
-  --dry-run              Com --migrate, apenas diagnostica; nao cria estado
+  --dry-run              Com --migrate ou --restore, apenas diagnostica
   --python VERSAO        Na migracao, usa CPython gerenciado ja instalado
                          (padrao: versao do geral, fallback 3.12)
+
+Backups de migracao (Python do sistema >=3.11; nao usa uv):
+  --list-backups         Lista os backups em .pyinit-backups como JSON
+  --restore ID           Revisa e restaura arquivos e .venv de um backup;
+                         o estado atual substituido fica em after-restore
 
 Manutencao de projeto existente (exige .venv; nao reinicializa o projeto):
   --fix-permissions      Revisa e repara permissoes via Data Lab Dotfiles
@@ -60,6 +77,9 @@ Exemplos:
   $(basename "$0") api-pedidos -a api -p 3.13
   $(basename "$0") projeto-legado --migrate --dry-run
   $(basename "$0") projeto-legado --migrate --python 3.13.11
+  $(basename "$0") projeto-legado --list-backups
+  $(basename "$0") projeto-legado --restore ID --dry-run
+  $(basename "$0") api-pedidos -a api --no-r --dry-run
   $(basename "$0") --fix-permissions
   $(basename "$0") --fix-permissions --sync --allow-direnv
 
@@ -168,11 +188,8 @@ PY
 }
 
 resolve_uv() {
-    if command -v "$UV_BIN" &>/dev/null; then
-        UV_CMD="$(command -v "$UV_BIN")"
-    elif command -v uv &>/dev/null; then
-        UV_CMD="$(command -v uv)"
-    else
+    # type -P considera somente arquivos executaveis, nunca funcoes ou builtins.
+    if ! UV_CMD=$(type -P "$UV_BIN") && ! UV_CMD=$(type -P uv); then
         fail "uv nao encontrado; instale-o explicitamente antes de continuar."
     fi
     [[ "$UV_CMD" == /* ]] || UV_CMD="$PWD/$UV_CMD"
@@ -244,12 +261,14 @@ inspect_creation_venv() {
 # Somente os destinos IDE/R da criacao; nenhum arquivo existente e reescrito.
 inspect_creation_configs() {
     local base=$1 file path state directory
-    for directory in "$base" "$base/.vscode"; do
+    local -a directories=("$base")
+    "$WITH_IDE" && directories+=("$base/.vscode")
+    for directory in "${directories[@]}"; do
         if [[ -d "$directory" && ! -x "$directory" ]]; then
             fail "Conflito em $directory: diretorio sem permissao de busca; configuracoes nao podem ser inspecionadas."
         fi
     done
-    if [[ -L "$base/.vscode" || (-e "$base/.vscode" && ! -d "$base/.vscode") ]]; then
+    if "$WITH_IDE" && [[ -L "$base/.vscode" || (-e "$base/.vscode" && ! -d "$base/.vscode") ]]; then
         fail "Conflito em $base/.vscode: esperado diretorio sem symlink."
     fi
     for file in "${CONFIG_FILES[@]}"; do
@@ -437,7 +456,7 @@ maintain_project() {
 migrate_project() {
     local migration_python=""
     "$PYTHON_SET" && migration_python="$PYTHON_DEFAULT"
-    /usr/bin/python3 -I -B - "$TARGET_DIR" "$migration_python" "$DRY_RUN" 3<&0 <<'PYINIT_MIGRATE'
+    /usr/bin/python3 -I -B - "$TARGET_DIR" "$migration_python" "$DRY_RUN" "$1" "${2-}" 3<&0 <<'PYINIT_MIGRATE'
 """Migra um projeto Python legado para uv com plano revisado e backup.
 
 Uso: migrate.py PROJETO [VERSAO_PYTHON|""] true|false  (confirmacao no fd 3)
@@ -456,6 +475,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -540,8 +560,8 @@ def version_constraint(value: str, poetry: bool = False) -> str:
         bool(
             re.fullmatch(
                 (
-                    "(?:===|==|!=|~=|>=|<=|>|<)[\\w.*+!-]+(?:\\s*,\\s*(?:"
-                    "===|==|!=|~=|>=|<=|>|<)[\\w.*+!-]+)*"
+                    "(?:===|==|!=|~=|>=|<=|>|<)\\s*[\\w.*+!-]+(?:\\s*,\\s*(?:"
+                    "===|==|!=|~=|>=|<=|>|<)\\s*[\\w.*+!-]+)*"
                 ),
                 value,
             )
@@ -1356,6 +1376,9 @@ def atomic(path: Path, raw: bytes, mode: int = 0o600) -> None:
             os.unlink(name)
 
 
+# Arquivos que a migracao pode criar ou regravar na raiz do projeto.
+MANAGED = ("pyproject.toml", "uv.lock", ".python-version", ".envrc", ".gitignore")
+LIMIT = 5 * 1024 * 1024
 BACKUP_IGNORE = b"# pyinit: backups privados de migracao\n.pyinit-backups/\n"
 
 
@@ -1485,13 +1508,7 @@ def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) 
             if moved:
                 os.rename(backup / "venv-before", project / ".venv")
             if started:
-                for name in (
-                    "pyproject.toml",
-                    "uv.lock",
-                    ".python-version",
-                    ".envrc",
-                    ".gitignore",
-                ):
+                for name in MANAGED:
                     raw = originals[name]
                     if raw is None:
                         (project / name).unlink(missing_ok=True)
@@ -1515,8 +1532,215 @@ def apply_migration(plan: dict, originals: dict, output: bytes | None, uv: str) 
         os.close(rootfd)
 
 
+def read_private(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        s = os.fstat(f.fileno())
+        require(
+            stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid() and s.st_nlink == 1,
+            f"Arquivo deve ser regular, proprio, sem symlink/hardlink: {path.name}",
+        )
+        raw = f.read(LIMIT + 1)
+    require(len(raw) <= LIMIT, f"Arquivo grande demais para inspecao: {path.name}")
+    return raw
+
+
+def private_directory(path: Path) -> bool:
+    try:
+        s = path.lstat()
+    except FileNotFoundError:
+        return False
+    require(
+        stat.S_ISDIR(s.st_mode) and s.st_uid == os.getuid() and not s.st_mode & 0o077,
+        f"Diretorio de backups deve ser proprio e privado (0700): {path.name}",
+    )
+    return True
+
+
+def list_backups(project: Path) -> list[dict]:
+    safe_directories(project, project)
+    parent = project / ".pyinit-backups"
+    if not private_directory(parent):
+        return []
+    items = []
+    for entry in sorted(
+        parent.iterdir(), key=lambda p: (p.lstat().st_mtime_ns, p.name)
+    ):
+        if not re.fullmatch(r"[0-9a-f]{32}", entry.name):
+            continue
+        item = dict(
+            id=entry.name,
+            status="ilegivel",
+            modified=time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(entry.lstat().st_mtime)
+            ),
+        )
+        try:
+            private_directory(entry)
+            record = json.loads(read_private(entry / "manifest.json"))
+            plan = record["plan"]
+            item.update(
+                status=str(record["status"]),
+                format=str(plan["format"]),
+                python=str(plan["python"]),
+            )
+        except (Refused, OSError, ValueError, KeyError, TypeError):
+            pass
+        items.append(item)
+    return items
+
+
+def plan_restore(project: Path, ident: str) -> tuple[dict, dict]:
+    require(
+        bool(re.fullmatch(r"[0-9a-f]{32}", ident)),
+        "ID de backup invalido; consulte --list-backups.",
+    )
+    safe_directories(project, project)
+    backup = project / ".pyinit-backups" / ident
+    require(
+        private_directory(backup.parent) and private_directory(backup),
+        f"Backup inexistente: {ident}",
+    )
+    record = json.loads(read_private(backup / "manifest.json"))
+    require(
+        isinstance(record, dict)
+        and isinstance(record.get("plan"), dict)
+        and isinstance(record["plan"].get("inputs"), dict),
+        "Manifesto de backup invalido.",
+    )
+    status = record.get("status")
+    require(
+        status in ("complete", "pending"),
+        f"Backup com estado {status!r} nao pode ser restaurado.",
+    )
+    inputs = record["plan"]["inputs"]
+    files = {}
+    for name in MANAGED:
+        current = fingerprint(project / name)
+        if fingerprint(backup / "files" / name):
+            files[name] = "restaurar do backup"
+        elif inputs.get(name) == {} and current:
+            files[name] = "remover (ausente antes da migracao)"
+        else:
+            # Copia ausente de um original existente: a migracao nao o alterou.
+            files[name] = "manter"
+        require(
+            files[name] == "manter" or not current or stat.S_ISREG(current["mode"]),
+            f"Arquivo atual deve ser regular: {name}",
+        )
+    venv = fingerprint(project / ".venv")
+    require(
+        not venv or stat.S_ISDIR(venv["mode"]),
+        "Diretorio invalido ou simbolico: .venv",
+    )
+    if fingerprint(backup / "venv-before"):
+        environment = "restaurar a .venv anterior; a atual vai para o backup"
+    elif inputs.get(".venv") == {} and venv:
+        environment = "mover a .venv atual para o backup (ausente antes da migracao)"
+    else:
+        environment = "manter"
+    require(
+        not fingerprint(backup / "after-restore"),
+        "Backup ja contem after-restore; revise manualmente.",
+    )
+    plan = dict(
+        operation="restore",
+        project=str(project),
+        backup=ident,
+        status=status,
+        format=record["plan"].get("format"),
+        python=record["plan"].get("python"),
+        files=files,
+        environment=environment,
+        current={name: fingerprint(project / name) for name in (*MANAGED, ".venv")},
+        saved=".pyinit-backups/" + ident + "/after-restore",
+        warnings=[
+            "Arquivos atuais substituidos ou removidos sao copiados antes para "
+            "after-restore; nao ha reversao automatica de uma restauracao parcial.",
+            "Permissoes da raiz do projeto nao sao afrouxadas novamente.",
+        ],
+    )
+    plan["approval"] = hashlib.sha256(
+        json.dumps(plan, sort_keys=True).encode()
+    ).hexdigest()
+    return plan, record
+
+
+def apply_restore(plan: dict) -> Path:
+    project = Path(plan["project"])
+    rootfd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(rootfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        current, record = plan_restore(project, plan["backup"])
+        require(
+            current["approval"] == plan["approval"],
+            "Projeto mudou apos a revisao; execute novamente.",
+        )
+        backup = project / ".pyinit-backups" / plan["backup"]
+        inputs = record["plan"]["inputs"]
+        after = backup / "after-restore"
+        after.mkdir(mode=0o700)
+        (after / "files").mkdir(mode=0o700)
+        changed = [n for n in MANAGED if plan["files"][n] != "manter"]
+        # Nada e substituido antes de todas as copias do estado atual existirem.
+        for name in changed:
+            if fingerprint(project / name):
+                atomic(after / "files" / name, read_private(project / name))
+        venv = project / ".venv"
+        if plan["environment"] != "manter":
+            if venv.exists():
+                os.rename(venv, after / "venv")
+            if (backup / "venv-before").exists():
+                os.rename(backup / "venv-before", venv)
+        for name in changed:
+            if plan["files"][name].startswith("remover"):
+                (project / name).unlink(missing_ok=True)
+                continue
+            mode = inputs.get(name, {}).get("mode", 0o600)
+            if name in ("pyproject.toml", "uv.lock"):
+                mode &= ~0o022
+            atomic(project / name, read_private(backup / "files" / name), mode)
+        protect_backup_ignore(project)
+        record["status"] = "restored"
+        atomic(backup / "manifest.json", (json.dumps(record, indent=2) + "\n").encode())
+        return after
+    finally:
+        os.close(rootfd)
+
+
+def confirmed(question: str) -> bool:
+    print(question + " [s/N] ", end="", file=sys.stderr, flush=True)
+    answer = os.fdopen(3).readline()
+    return answer.endswith("\n") and answer.strip().lower() in ("s", "sim")
+
+
+def restore(project: Path, ident: str, dry: bool) -> int:
+    plan, _ = plan_restore(project, ident)
+    print(json.dumps(plan, indent=2, ensure_ascii=False), flush=True)
+    if dry:
+        return 0
+    if not confirmed(
+        "Restaurar este backup? Arquivos e .venv atuais listados serao "
+        "substituidos; copias ficam em after-restore."
+    ):
+        print("Restauracao cancelada; nenhum arquivo alterado.", file=sys.stderr)
+        return 1
+    after = apply_restore(plan)
+    print(
+        f"Restauracao concluida. Estado anterior a ela: {after}\n"
+        "Nenhum stage, commit ou push foi executado."
+    )
+    return 0
+
+
 def main() -> int:
     project = Path(os.path.abspath(sys.argv[1]))
+    action = sys.argv[4] if len(sys.argv) > 4 else "migrate"
+    if action == "list":
+        print(json.dumps(list_backups(project), indent=2, ensure_ascii=False))
+        return 0
+    if action == "restore":
+        return restore(project, sys.argv[5], sys.argv[3] == "true")
     python = sys.argv[2]
     dry = sys.argv[3] == "true"
     if not python:
@@ -1585,9 +1809,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        signal.signal(
-            signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt())
-        )
+        # Encerramento e terminal fechado seguem o mesmo rollback do Ctrl+C.
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
         sys.exit(main())
     except (
         Refused,
@@ -1604,18 +1828,98 @@ if __name__ == "__main__":
         message = (
             str(exc)
             if isinstance(exc, (Refused, OSError, subprocess.CalledProcessError))
+            else "Operacao interrompida por sinal."
+            if isinstance(exc, KeyboardInterrupt)
             else f"Arquivo invalido ({type(exc).__name__}); revise os manifestos."
         )
         if len(sys.argv) > 3 and sys.argv[3] == "true":
             print(
                 json.dumps(
-                    dict(operation="migrate", project=sys.argv[1], blockers=[message]),
+                    dict(
+                        operation=sys.argv[4] if len(sys.argv) > 4 else "migrate",
+                        project=sys.argv[1],
+                        blockers=[message],
+                    ),
                     ensure_ascii=False,
                 )
             )
         print(f"Erro de migracao: {message}", file=sys.stderr)
         sys.exit(2)
 PYINIT_MIGRATE
+}
+
+# Chamadas uv add do arquetipo; $1 executa (creation_uv) ou apenas mostra (show_uv).
+archetype_additions() {
+    case "$ARCHETYPE" in
+        ds)
+            "$1" add --python "$PYTHON_DEFAULT" polars duckdb pyarrow
+            "$1" add --python "$PYTHON_DEFAULT" --dev ipykernel
+            "$1" add --python "$PYTHON_DEFAULT" --group notebook jupyterlab
+            ;;
+        api) "$1" add --python "$PYTHON_DEFAULT" fastapi pydantic httpx ;;
+        cli) "$1" add --python "$PYTHON_DEFAULT" typer rich ;;
+        universal) ;; # Nenhuma dependencia extra alem das de dev
+    esac
+}
+
+show_uv() {
+    printf '  uv'
+    printf ' %q' "$@"
+    printf '\n'
+}
+
+# Plano da criacao: somente leitura, apos as mesmas conferencias iniciais.
+plan_creation() {
+    local base=$creation_project name file
+    name=$(basename -- "$(realpath -ms -- "$TARGET_DIR")")
+    echo "Plano de criacao (--dry-run): nada foi criado e uv nao foi chamado."
+    if [[ -d "$base" ]]; then
+        echo "Diretorio: $base (existente)"
+    else
+        echo "Diretorio: $base (sera criado)"
+    fi
+    echo "Python: $PYTHON_DEFAULT | Arquetipo: $ARCHETYPE | uv: $UV_CMD"
+    echo "Chamadas uv, nesta ordem:"
+    show_uv python install "$PYTHON_DEFAULT"
+    if [[ ! -f "$base/pyproject.toml" ]]; then
+        show_uv init --app --package --python "$PYTHON_DEFAULT" --name "$name" --no-workspace "${INIT_VCS[@]}"
+    fi
+    show_uv python pin "$PYTHON_DEFAULT" --no-project
+    show_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
+    archetype_additions show_uv
+    show_uv sync --python "$PYTHON_DEFAULT"
+    echo "Arquivos:"
+    if [[ -f "$base/pyproject.toml" ]]; then
+        echo "  pyproject.toml: existente; somente familias Ruff/pytest ausentes sao acrescentadas"
+    else
+        echo "  pyproject.toml: criar via uv init, com padroes Ruff/pytest"
+    fi
+    for file in "${CONFIG_FILES[@]}"; do
+        if [[ ${CONFIG_STATES[$file]} == preserved ]]; then
+            echo "  $file: preservar"
+        else
+            echo "  $file: criar"
+        fi
+    done
+    if [[ -e "$base/tests" || -L "$base/tests" ]]; then
+        echo "  tests/: preservar"
+    else
+        echo "  tests/test_smoke.py: criar"
+    fi
+    if [[ -e "$base/.envrc" || -L "$base/.envrc" ]]; then
+        echo "  .envrc: preservar"
+    else
+        echo "  .envrc: criar (direnv allow continua manual)"
+    fi
+    if ! "$WITH_GIT"; then
+        echo "  Git: nao inicializar (--no-git)"
+    elif [[ -e "$base/.git" || -L "$base/.git" ]]; then
+        echo "  Git: repositorio existente preservado"
+    elif command -v git &>/dev/null; then
+        echo "  Git: inicializar com git init -b main, sem stage ou commit"
+    else
+        echo "  Git: ausente no PATH; nao inicializar"
+    fi
 }
 
 # Parsing de argumentos
@@ -1647,6 +1951,34 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --no-ide)
+            CREATE_ONLY=true
+            WITH_IDE=false
+            shift
+            ;;
+        --no-r)
+            CREATE_ONLY=true
+            WITH_R=false
+            shift
+            ;;
+        --no-git)
+            CREATE_ONLY=true
+            WITH_GIT=false
+            shift
+            ;;
+        --restore)
+            [[ $# -ge 2 && "$2" != -* ]] || fail "--restore exige o ID de um backup."
+            RESTORE_ID="$2"
+            shift 2
+            ;;
+        --list-backups)
+            LIST_BACKUPS=true
+            shift
+            ;;
+        -V | --version)
+            echo "pyinit $PYINIT_VERSION"
+            exit 0
+            ;;
         --fix-permissions)
             FIX_PERMISSIONS=true
             shift
@@ -1677,16 +2009,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if "$CREATE_ONLY" && { "$MIGRATE" || "$FIX_PERMISSIONS" || "$LIST_BACKUPS" || [[ -n "$RESTORE_ID" ]]; }; then
+    fail "--no-ide, --no-r e --no-git pertencem somente a criacao."
+fi
+if "$LIST_BACKUPS" || [[ -n "$RESTORE_ID" ]]; then
+    if "$MIGRATE" || "$FIX_PERMISSIONS" || "$SYNC" || "$ALLOW_DIRENV" || "$INIT_OPTIONS"; then
+        fail "--restore e --list-backups nao aceitam outros modos, --python ou --archetype."
+    fi
+    if "$LIST_BACKUPS"; then
+        [[ -z "$RESTORE_ID" ]] || fail "use --restore ou --list-backups, nao ambos."
+        migrate_project list
+    else
+        migrate_project restore "$RESTORE_ID"
+    fi
+    exit 0
+fi
 if "$MIGRATE"; then
     if "$FIX_PERMISSIONS" || "$SYNC" || "$ALLOW_DIRENV" || "$ARCHETYPE_SET"; then
         fail "--migrate nao aceita --fix-permissions, --sync, --allow-direnv ou --archetype."
     fi
-    migrate_project
+    migrate_project migrate
     exit 0
 fi
-"$DRY_RUN" && fail "--dry-run exige --migrate."
 
 if "$FIX_PERMISSIONS"; then
+    "$DRY_RUN" && fail "--dry-run nao se aplica a --fix-permissions."
     "$INIT_OPTIONS" && fail "--fix-permissions nao aceita --python ou --archetype."
     maintain_project
     exit 0
@@ -1699,7 +2046,12 @@ resolve_uv
 for tool in stat mktemp ln rm rmdir realpath; do
     command -v "$tool" &>/dev/null || fail "$tool (coreutils) necessario para criar configuracoes sem sobrescrita."
 done
-CONFIG_FILES=(.vscode/settings.json .Renviron .Rprofile)
+# O proprio uv init criaria um repositorio; --no-git precisa desativar isso.
+INIT_VCS=()
+"$WITH_GIT" || INIT_VCS=(--vcs none)
+CONFIG_FILES=()
+"$WITH_IDE" && CONFIG_FILES+=(.vscode/settings.json)
+"$WITH_R" && CONFIG_FILES+=(.Renviron .Rprofile)
 declare -A CONFIG_STATES=()
 inspect_creation_configs "$TARGET_DIR"
 # A sentinela conserva LFs finais; retirar apenas o LF emitido pelo comando.
@@ -1710,6 +2062,11 @@ inspect_creation_scope
 inspect_creation_venv
 [[ -x /usr/bin/python3 ]] || fail "Criacao exige /usr/bin/python3 >=3.11 com tomllib."
 configure_creation_tools "$TARGET_DIR/pyproject.toml" check
+
+if "$DRY_RUN"; then
+    plan_creation
+    exit 0
+fi
 
 echo "==> Configurando projeto Python..."
 echo "    Diretorio: $TARGET_DIR"
@@ -1734,7 +2091,7 @@ creation_uv python install "$PYTHON_DEFAULT"
 # 3. Inicializar projeto com uv
 if [ ! -f "pyproject.toml" ]; then
     echo "==> Inicializando pyproject.toml e estrutura base..."
-    creation_uv init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME" --no-workspace
+    creation_uv init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME" --no-workspace "${INIT_VCS[@]}"
 fi
 
 # 4. Fixar versao no .python-version
@@ -1745,25 +2102,8 @@ echo "==> Configurando ferramentas de teste e lint..."
 creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
 
 # 6. Adicionar pacotes especificos de cada arquetipo
-case "$ARCHETYPE" in
-    ds)
-        echo "==> Adicionando stack de Data Science (polars, duckdb, pyarrow, ipykernel e JupyterLab)..."
-        creation_uv add --python "$PYTHON_DEFAULT" polars duckdb pyarrow
-        creation_uv add --python "$PYTHON_DEFAULT" --dev ipykernel
-        creation_uv add --python "$PYTHON_DEFAULT" --group notebook jupyterlab
-        ;;
-    api)
-        echo "==> Adicionando stack de APIs (fastapi, pydantic, httpx)..."
-        creation_uv add --python "$PYTHON_DEFAULT" fastapi pydantic httpx
-        ;;
-    cli)
-        echo "==> Adicionando stack de CLI (typer, rich)..."
-        creation_uv add --python "$PYTHON_DEFAULT" typer rich
-        ;;
-    universal)
-        # Nenhuma dependencia extra alem das de dev
-        ;;
-esac
+[[ "$ARCHETYPE" == universal ]] || echo "==> Adicionando stack do arquetipo $ARCHETYPE..."
+archetype_additions creation_uv
 
 # 7. Compor somente familias ausentes, sem reescrever configuracoes existentes.
 echo "==> Preparando configuracoes Ruff/pytest..."
@@ -1771,9 +2111,10 @@ configure_creation_tools pyproject.toml apply
 
 # 8. Integracao com IDEs (VS Code e Positron)
 inspect_creation_configs .
-[[ -d .vscode ]] || mkdir -- .vscode
-echo "==> Preparando configuracoes IDE/R; arquivos existentes serao preservados..."
-write_creation_config .vscode/settings.json <<'EOF'
+if "$WITH_IDE"; then
+    [[ -d .vscode ]] || mkdir -- .vscode
+    echo "==> Preparando configuracoes IDE; arquivos existentes serao preservados..."
+    write_creation_config .vscode/settings.json <<'EOF'
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "[python]": {
@@ -1787,17 +2128,21 @@ write_creation_config .vscode/settings.json <<'EOF'
 }
 EOF
 
+fi
+
 # 9. Integracao com RStudio e Quarto CLI (.Renviron e .Rprofile)
-write_creation_config .Renviron <<'EOF'
+if "$WITH_R"; then
+    write_creation_config .Renviron <<'EOF'
 RETICULATE_PYTHON=.venv/bin/python
 EOF
 
-write_creation_config .Rprofile <<'EOF'
+    write_creation_config .Rprofile <<'EOF'
 # Vincula o reticulate ao ambiente virtual gerenciado pelo uv
 if (file.exists(".venv/bin/python")) {
   Sys.setenv(RETICULATE_PYTHON = file.path(getwd(), ".venv/bin/python"))
 }
 EOF
+fi
 
 # 9b. Teste inicial: testpaths aponta para tests/; um diretorio existente e preservado.
 if [ ! -e tests ] && [ ! -L tests ]; then
@@ -1830,7 +2175,7 @@ else
 fi
 
 # 12. Ajustar .gitignore
-if [ -f ".gitignore" ]; then
+if "$WITH_R" && [ -f ".gitignore" ]; then
     if ! grep -qxF '.Rproj.user/' .gitignore; then
         cat >>.gitignore <<'EOF'
 
@@ -1843,7 +2188,7 @@ EOF
 fi
 
 # 13. Inicializar Git caso ainda nao exista, inclusive em worktrees.
-if [ ! -e ".git" ] && [ ! -L ".git" ] && command -v git &>/dev/null; then
+if "$WITH_GIT" && [ ! -e ".git" ] && [ ! -L ".git" ] && command -v git &>/dev/null; then
     echo "==> Inicializando repositorio Git..."
     git init -b main
 fi
@@ -1866,7 +2211,7 @@ echo "  direnv allow .                   # Autorizacao manual apos a revisao"
 echo "  A troca ocorre no proximo prompt; ancestrais existentes precisam ser seguros."
 echo "Nenhum arquivo foi colocado em stage e nenhum commit ou push foi executado."
 echo ""
-echo "Arquivos de configuracao IDE/R:"
+[[ ${#CONFIG_FILES[@]} -eq 0 ]] || echo "Arquivos de configuracao IDE/R:"
 for file in "${CONFIG_FILES[@]}"; do
     if [[ ${CONFIG_STATES[$file]} == preserved ]]; then
         echo "  $file: preservado; conteudo e integracao nao foram alterados nem verificados."
