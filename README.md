@@ -356,7 +356,7 @@ bash scripts/init_project.sh ../api-pedidos --archetype api --no-r --dry-run
 |---|---|
 | `--no-ide` | Não cria `.vscode/settings.json` nem inspeciona `.vscode`. |
 | `--no-r` | Não cria `.Renviron`/`.Rprofile` nem acrescenta as regras R ao `.gitignore`. |
-| `--no-git` | Não inicializa o repositório Git. |
+| `--no-git` | Não inicializa o repositório Git, nem pelo gerador nem pelo `uv init` (`--vcs none`); nesse caso o `uv init` também não cria `.gitignore`. |
 | `--version` | Mostra a versão do gerador, igual à do `pyproject.toml` deste template. |
 
 As três opções `--no-*` pertencem somente à criação e são recusadas nos

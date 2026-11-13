@@ -1882,7 +1882,7 @@ plan_creation() {
     echo "Chamadas uv, nesta ordem:"
     show_uv python install "$PYTHON_DEFAULT"
     if [[ ! -f "$base/pyproject.toml" ]]; then
-        show_uv init --app --package --python "$PYTHON_DEFAULT" --name "$name" --no-workspace
+        show_uv init --app --package --python "$PYTHON_DEFAULT" --name "$name" --no-workspace "${INIT_VCS[@]}"
     fi
     show_uv python pin "$PYTHON_DEFAULT" --no-project
     show_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
@@ -2046,6 +2046,9 @@ resolve_uv
 for tool in stat mktemp ln rm rmdir realpath; do
     command -v "$tool" &>/dev/null || fail "$tool (coreutils) necessario para criar configuracoes sem sobrescrita."
 done
+# O proprio uv init criaria um repositorio; --no-git precisa desativar isso.
+INIT_VCS=()
+"$WITH_GIT" || INIT_VCS=(--vcs none)
 CONFIG_FILES=()
 "$WITH_IDE" && CONFIG_FILES+=(.vscode/settings.json)
 "$WITH_R" && CONFIG_FILES+=(.Renviron .Rprofile)
@@ -2088,7 +2091,7 @@ creation_uv python install "$PYTHON_DEFAULT"
 # 3. Inicializar projeto com uv
 if [ ! -f "pyproject.toml" ]; then
     echo "==> Inicializando pyproject.toml e estrutura base..."
-    creation_uv init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME" --no-workspace
+    creation_uv init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME" --no-workspace "${INIT_VCS[@]}"
 fi
 
 # 4. Fixar versao no .python-version

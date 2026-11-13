@@ -1816,7 +1816,7 @@ def test_creation_opt_out_flags_skip_only_their_files(
     absent: list[str],
     present: list[str],
 ) -> None:
-    workspace, _ = config_creation
+    workspace, env = config_creation
     target = workspace / "study"
     result = run_init(config_creation, target, *flags)
     assert result.returncode == 0, result.stderr
@@ -1826,6 +1826,8 @@ def test_creation_opt_out_flags_skip_only_their_files(
         assert (target / name).exists(), name
     ignore = (target / ".gitignore").read_text()
     assert (".Rproj.user/" in ignore) is ("--no-r" not in flags)
+    init = next(c["args"] for c in uv_details(env) if c["args"][0] == "init")
+    assert (init[-2:] == ["--vcs", "none"]) is ("--no-git" in flags)
     for name in absent:
         assert f"{name}:" not in result.stdout
 
