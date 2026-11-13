@@ -397,7 +397,7 @@ plan_creation() {
         show_uv init --app --package --python "$PYTHON_DEFAULT" --name "$name" --no-workspace "${INIT_VCS[@]}"
     fi
     show_uv python pin "$PYTHON_DEFAULT" --no-project
-    show_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
+    show_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff mypy
     archetype_additions show_uv
     show_uv sync --python "$PYTHON_DEFAULT"
     echo "Arquivos:"
@@ -630,7 +630,7 @@ creation_uv python pin "$PYTHON_DEFAULT" --no-project
 
 # 5. Adicionar dependencias de desenvolvimento
 echo "==> Configurando ferramentas de teste e lint..."
-creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
+creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff mypy
 
 # 6. Adicionar pacotes especificos de cada arquetipo
 [[ "$ARCHETYPE" == universal ]] || echo "==> Adicionando stack do arquetipo $ARCHETYPE..."
@@ -718,6 +718,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
+      - run: uv run mypy
       - run: uv run pytest
 EOF
 fi
@@ -738,6 +739,12 @@ repos:
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
 EOF
 fi
 
@@ -788,6 +795,7 @@ if "$WITH_PRE_COMMIT"; then
     echo "  uvx pre-commit install            # Ativar os hooks Ruff (opcional)"
 fi
 echo "  uv run ruff check .               # Verificar linter"
+echo "  uv run mypy                       # Verificar tipos"
 echo "  uv run python <script.py>         # Executar sem precisar de 'source venv'"
 echo ""
 echo "Troca automatica opcional (Data Lab Dotfiles + direnv):"

@@ -1,5 +1,21 @@
 # Validação do gerador
 
+## Tipos, equivalências Conda e política de segurança — 2026-11-13
+
+- Template: mypy em modo strict sobre `src/` (com `py.typed` e `TypedDict` em
+  `system_diagnostic`), executado no CI. `scripts/pyinit` não é verificado
+  pelo mypy: `migrate.py` tem 23 apontamentos de estreitamento de tipos que
+  não foram tratados nesta etapa.
+- Projetos gerados: `mypy` no grupo `dev`, família `[tool.mypy]` quando
+  ausente, passo no CI gerado e hook pre-commit. A família é opcional na
+  composição e nunca bloqueia a criação.
+- Migração Conda: a lista embutida virou o mapeamento `CONDA_PYPI`
+  (nome Conda → nome PyPI), com oito nomes divergentes novos, e pode ser
+  ampliada por projeto em `.pyinit-conda.toml`. Os 44 pacotes anteriores,
+  `setuptools` e `wheel` mantêm o mesmo resultado.
+- `SECURITY.md` aponta para o relato privado de vulnerabilidades do GitHub,
+  que precisa estar habilitado nas configurações do repositório.
+
 ## Documentação, CI e automação gerada — 2026-11-13
 
 - README reduzido a um resumo de uso; o detalhe do gerador foi movido, sem

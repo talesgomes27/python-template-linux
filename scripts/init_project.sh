@@ -313,7 +313,7 @@ write_creation_config() {
 
 configure_creation_tools() {
     /usr/bin/python3 -I -B - "$1" "$2" <<'PYINIT_TOOLS'
-"""Compoe os padroes Ruff/pytest ausentes em um pyproject.toml.
+"""Compoe os padroes Ruff/pytest/mypy ausentes em um pyproject.toml.
 
 Uso: configure_tools.py PYPROJECT check|apply
 """
@@ -347,7 +347,17 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra -q --strict-markers"
 """,
+    "mypy": """
+[tool.mypy]
+files = ["src", "tests"]
+check_untyped_defs = true
+warn_unused_ignores = true
+""",
 }
+
+
+# Sem estas familias a criacao e recusada; as demais sao acrescentadas se possivel.
+REQUIRED = ("ruff", "pytest")
 
 
 def main(argv: list[str]) -> int:
@@ -363,29 +373,49 @@ def main(argv: list[str]) -> int:
             raise ValueError(
                 "tool deve ser uma tabela; revise a configuracao manualmente"
             )
-        for name in ("ruff", "pytest"):
+        for name in DEFAULTS:
             if name in tool and not isinstance(tool[name], dict):
                 raise ValueError(
                     f"tool.{name} deve ser uma tabela; "
                     "revise a configuracao manualmente"
                 )
+        text = original.decode("utf-8")
         addition = "".join(
-            block for name, block in DEFAULTS.items() if name not in tool
+            block
+            for name, block in DEFAULTS.items()
+            if name in REQUIRED and name not in tool
         )
         if addition:
             try:
-                tomllib.loads(original.decode("utf-8") + addition)
+                tomllib.loads(text + addition)
             except tomllib.TOMLDecodeError as exc:
                 raise ValueError(
                     "composicao exige reescrever tabelas existentes "
                     "(por exemplo inline); revise manualmente"
                 ) from exc
+        # Familias opcionais nunca bloqueiam: sem composicao segura, ficam de fora.
+        skipped = set()
+        for name, block in DEFAULTS.items():
+            if name in REQUIRED or name in tool:
+                continue
+            try:
+                tomllib.loads(text + addition + block)
+            except tomllib.TOMLDecodeError:
+                skipped.add(name)
+            else:
+                addition += block
         if mode == "apply":
             if addition:
                 with path.open("ab") as stream:
                     stream.write(addition.encode("utf-8"))
             for name in DEFAULTS:
-                state = "preservado" if name in tool else "configuracao padrao criada"
+                state = (
+                    "preservado"
+                    if name in tool
+                    else "nao adicionado; componha manualmente"
+                    if name in skipped
+                    else "configuracao padrao criada"
+                )
                 print(f"  {name}: {state}.")
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"Erro: {path}: composicao Ruff/pytest recusada: {exc}", file=sys.stderr)
@@ -704,6 +734,93 @@ def static_setup(raw: bytes) -> dict:
         ) from None
 
 
+# Pacotes Conda com equivalencia revisada no PyPI: nome Conda -> nome PyPI.
+# Para ampliar a lista, acrescente pares aqui; em um projeto especifico, use
+# o arquivo .pyinit-conda.toml (tabela [packages]) sem alterar o gerador.
+CONDA_PYPI = {
+    "numpy": "numpy",
+    "pandas": "pandas",
+    "scipy": "scipy",
+    "scikit-learn": "scikit-learn",
+    "matplotlib": "matplotlib",
+    "seaborn": "seaborn",
+    "jupyter": "jupyter",
+    "jupyterlab": "jupyterlab",
+    "notebook": "notebook",
+    "ipykernel": "ipykernel",
+    "ipython": "ipython",
+    "pytest": "pytest",
+    "pytest-cov": "pytest-cov",
+    "ruff": "ruff",
+    "requests": "requests",
+    "httpx": "httpx",
+    "flask": "flask",
+    "fastapi": "fastapi",
+    "pydantic": "pydantic",
+    "polars": "polars",
+    "duckdb": "duckdb",
+    "pyarrow": "pyarrow",
+    "pillow": "pillow",
+    "beautifulsoup4": "beautifulsoup4",
+    "lxml": "lxml",
+    "tqdm": "tqdm",
+    "click": "click",
+    "typer": "typer",
+    "rich": "rich",
+    "sympy": "sympy",
+    "statsmodels": "statsmodels",
+    "sqlalchemy": "sqlalchemy",
+    "lightgbm": "lightgbm",
+    "xgboost": "xgboost",
+    "openpyxl": "openpyxl",
+    "plotly": "plotly",
+    "bokeh": "bokeh",
+    "dask": "dask",
+    "nltk": "nltk",
+    "spacy": "spacy",
+    "pyspark": "pyspark",
+    "joblib": "joblib",
+    "pyyaml": "pyyaml",
+    "python-dotenv": "python-dotenv",
+    "setuptools": "setuptools",
+    "wheel": "wheel",
+    # Nomes que diferem entre conda-forge/defaults e PyPI.
+    "pytorch": "torch",
+    "matplotlib-base": "matplotlib",
+    "seaborn-base": "seaborn",
+    "py-xgboost": "xgboost",
+    "dask-core": "dask",
+    "pytables": "tables",
+    "python-graphviz": "graphviz",
+    "msgpack-python": "msgpack",
+}
+CONDA_MAP_FILE = ".pyinit-conda.toml"
+PACKAGE_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+
+
+def conda_equivalents(raw: bytes | None) -> dict[str, str]:
+    """Une a lista embutida as equivalencias revisadas declaradas no projeto."""
+    packages = dict(CONDA_PYPI)
+    if raw is None:
+        return packages
+    data = tomllib.loads(raw.decode())
+    extra = data.get("packages", {})
+    require(
+        set(data) <= {"packages"}
+        and isinstance(extra, dict)
+        and all(
+            isinstance(v, str)
+            and re.fullmatch(PACKAGE_NAME, k)
+            and re.fullmatch(PACKAGE_NAME, v)
+            for k, v in extra.items()
+        ),
+        f"{CONDA_MAP_FILE} deve conter somente [packages] com "
+        'pares nome-conda = "nome-pypi".',
+    )
+    packages.update(extra)
+    return packages
+
+
 def plan_migration(
     project: Path, python: str
 ) -> tuple[dict, dict[str, bytes | None], bytes | None]:
@@ -771,6 +888,7 @@ def plan_migration(
         "requirements-dev.in",
         "requirements-dev.txt",
         "dev-requirements.txt",
+        CONDA_MAP_FILE,
     ]
     for name in names:
         read(name)
@@ -1140,52 +1258,12 @@ def plan_migration(
         )
         section = ""
         pip_indent = None
-        packages = {
-            "numpy",
-            "pandas",
-            "scipy",
-            "scikit-learn",
-            "matplotlib",
-            "seaborn",
-            "jupyter",
-            "jupyterlab",
-            "notebook",
-            "ipykernel",
-            "ipython",
-            "pytest",
-            "pytest-cov",
-            "ruff",
-            "requests",
-            "httpx",
-            "flask",
-            "fastapi",
-            "pydantic",
-            "polars",
-            "duckdb",
-            "pyarrow",
-            "pillow",
-            "beautifulsoup4",
-            "lxml",
-            "tqdm",
-            "click",
-            "typer",
-            "rich",
-            "sympy",
-            "statsmodels",
-            "sqlalchemy",
-            "lightgbm",
-            "xgboost",
-            "openpyxl",
-            "plotly",
-            "bokeh",
-            "dask",
-            "nltk",
-            "spacy",
-            "pyspark",
-            "joblib",
-            "pyyaml",
-            "python-dotenv",
-        }
+        packages = conda_equivalents(read(CONDA_MAP_FILE))
+        if originals[CONDA_MAP_FILE] is not None:
+            warnings.append(
+                f"Equivalencias Conda adicionais lidas de {CONDA_MAP_FILE}; "
+                "a revisao desses pares e responsabilidade do projeto."
+            )
         for line in raw.decode().splitlines():
             clean = re.split(r"\s+#", line.strip(), maxsplit=1)[0].strip()
             if not clean or clean.startswith("#"):
@@ -1235,10 +1313,11 @@ def plan_migration(
                 requires = spec
             elif name != "pip":
                 require(
-                    name in packages or name in ("setuptools", "wheel"),
-                    f"Pacote Conda sem equivalencia revisada no PyPI: {name}",
+                    name in packages,
+                    f"Pacote Conda sem equivalencia revisada no PyPI: {name}; "
+                    f"apos revisar, declare-a em {CONDA_MAP_FILE}",
                 )
-                deps.append(name + version_constraint(spec))
+                deps.append(packages[name] + version_constraint(spec))
         require(section or deps, "Manifesto Conda vazio.")
         warnings.append(
             "Canais/builds Conda nao sao transportados para PyPI; "
@@ -1935,7 +2014,7 @@ plan_creation() {
         show_uv init --app --package --python "$PYTHON_DEFAULT" --name "$name" --no-workspace "${INIT_VCS[@]}"
     fi
     show_uv python pin "$PYTHON_DEFAULT" --no-project
-    show_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
+    show_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff mypy
     archetype_additions show_uv
     show_uv sync --python "$PYTHON_DEFAULT"
     echo "Arquivos:"
@@ -2168,7 +2247,7 @@ creation_uv python pin "$PYTHON_DEFAULT" --no-project
 
 # 5. Adicionar dependencias de desenvolvimento
 echo "==> Configurando ferramentas de teste e lint..."
-creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
+creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff mypy
 
 # 6. Adicionar pacotes especificos de cada arquetipo
 [[ "$ARCHETYPE" == universal ]] || echo "==> Adicionando stack do arquetipo $ARCHETYPE..."
@@ -2256,6 +2335,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
+      - run: uv run mypy
       - run: uv run pytest
 EOF
 fi
@@ -2276,6 +2356,12 @@ repos:
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
 EOF
 fi
 
@@ -2326,6 +2412,7 @@ if "$WITH_PRE_COMMIT"; then
     echo "  uvx pre-commit install            # Ativar os hooks Ruff (opcional)"
 fi
 echo "  uv run ruff check .               # Verificar linter"
+echo "  uv run mypy                       # Verificar tipos"
 echo "  uv run python <script.py>         # Executar sem precisar de 'source venv'"
 echo ""
 echo "Troca automatica opcional (Data Lab Dotfiles + direnv):"

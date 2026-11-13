@@ -59,6 +59,9 @@ jobs:
       - name: Análise estática (Ruff)
         run: uv run ruff check .
 
+      - name: Checagem de tipos (mypy)
+        run: uv run mypy
+
       - name: Conferir gerador sincronizado com as fontes
         run: uv run python scripts/build_init_project.py --check
 

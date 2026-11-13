@@ -23,6 +23,24 @@ gravável por grupo/outros, como `775`, a integração do Data Lab Dotfiles aind
 poderá recusá-lo. Revise somente os caminhos apontados pela guarda antes de
 alterar suas permissões.
 
+### Checagem de tipos (mypy)
+
+O gerador adiciona `mypy` ao grupo `dev` e, quando a família `tool.mypy` está
+ausente, acrescenta:
+
+```toml
+[tool.mypy]
+files = ["src", "tests"]
+check_untyped_defs = true
+warn_unused_ignores = true
+```
+
+Uma família `tool.mypy` existente é preservada integralmente. Diferente de
+Ruff e pytest, o mypy é opcional na composição: se o bloco não puder ser
+acrescentado sem reescrever o arquivo (por exemplo, `tool` em tabela inline),
+a criação continua e informa que ele deve ser composto manualmente. O padrão
+supõe os diretórios `src/` e `tests/`; ajuste `files` em outros layouts.
+
 ### Composição de Ruff e pytest
 
 As famílias `tool.ruff` e `tool.pytest` são tratadas independentemente. Se uma
@@ -291,11 +309,12 @@ aprovada de sua versão fixada e do instalador.
 Quando ausentes, o gerador cria dois arquivos de automação:
 
 - `.github/workflows/ci.yml`: em push para `main` e em pull requests, executa
-  `uv sync --locked`, `ruff format --check`, `ruff check` e `pytest`. As
+  `uv sync --locked`, `ruff format --check`, `ruff check`, `mypy` e `pytest`. As
   actions vêm fixadas por SHA, o token tem somente `contents: read` e o
   checkout não persiste credenciais.
-- `.pre-commit-config.yaml`: hooks locais que chamam `uv run ruff check --fix`
-  e `uv run ruff format`, usando o Ruff travado no `uv.lock` do projeto. O
+- `.pre-commit-config.yaml`: hooks locais que chamam `uv run ruff check --fix`,
+  `uv run ruff format` e `uv run mypy`, usando as versões travadas no
+  `uv.lock` do projeto. O
   gerador não instala o pre-commit; ative com `uvx pre-commit install`.
 
 Arquivos existentes são preservados. Se `.github` ou `.github/workflows` for

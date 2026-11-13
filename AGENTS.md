@@ -30,6 +30,7 @@ Este repositório adota a arquitetura canônica de Python moderno para Linux bas
   ```bash
   uv run ruff check .
   uv run ruff format --check .
+  uv run mypy
   uv run pytest
   ```
 

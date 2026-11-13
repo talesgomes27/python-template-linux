@@ -2,10 +2,21 @@
 
 import platform
 import sys
-from typing import Any
+from typing import TypedDict
 
 
-def system_diagnostic() -> dict[str, Any]:
+class SystemDiagnostic(TypedDict):
+    """Dados do runtime Python e do sistema host."""
+
+    python_version: str
+    python_implementation: str
+    system: str
+    release: str
+    architecture: str
+    is_virtual_env: bool
+
+
+def system_diagnostic() -> SystemDiagnostic:
     """Retorna dados estruturados do runtime Python e do sistema host."""
     return {
         "python_version": platform.python_version(),

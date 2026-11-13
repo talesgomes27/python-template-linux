@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -1158,3 +1159,66 @@ def test_termination_signals_roll_back_migration(
     assert not (project / "pyproject.toml").exists()
     backup = next((project / ".pyinit-backups").iterdir())
     assert json.loads((backup / "manifest.json").read_text())["status"] == "rolled-back"
+
+
+def test_conda_maps_divergent_names_and_project_equivalents(
+    legacy: tuple[Path, dict[str, str]],
+) -> None:
+    project, _ = legacy
+    (project / "environment.yml").write_text(
+        "dependencies:\n  - pytorch=2.4\n  - matplotlib-base\n  - numpy>=2\n"
+        "  - internal-tool=1\n"
+    )
+    refused = run(legacy, "--dry-run")
+    assert refused.returncode == 2
+    blocker = json.loads(refused.stdout)["blockers"][0]
+    assert "internal-tool" in blocker and ".pyinit-conda.toml" in blocker
+    (project / ".pyinit-conda.toml").write_text(
+        '[packages]\ninternal-tool = "internal-tool-py"\nnumpy = "numpy-alt"\n'
+    )
+    result = run(legacy, "--dry-run")
+    assert result.returncode == 0, result.stderr
+    plan = json.loads(result.stdout)
+    assert plan["dependencies"] == [
+        "torch==2.4.*",
+        "matplotlib",
+        "numpy-alt>=2",
+        "internal-tool-py==1.*",
+    ]
+    assert any(".pyinit-conda.toml" in warning for warning in plan["warnings"])
+    assert plan["inputs"][".pyinit-conda.toml"]["sha256"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '[packages]\npkg = "bad name"\n',
+        '[packages]\npkg = ["a"]\n',
+        'packages = "x"\n',
+        '[packages]\npkg = "ok"\n[other]\nkey = 1\n',
+        "[packages\n",
+    ],
+)
+def test_conda_refuses_invalid_project_equivalents(
+    legacy: tuple[Path, dict[str, str]], content: str
+) -> None:
+    project, env = legacy
+    (project / "environment.yml").write_text("dependencies:\n  - numpy\n")
+    (project / ".pyinit-conda.toml").write_text(content)
+    before = tree(Path(env["HOME"]))
+    result = run(legacy, "--dry-run")
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["blockers"]
+    assert tree(Path(env["HOME"])) == before
+
+
+def test_conda_builtin_equivalents_are_valid_names(
+    pyinit: Callable[[str], ModuleType],
+) -> None:
+    module = pyinit("migrate")
+    pattern = re.compile(module.PACKAGE_NAME)
+    assert len(module.CONDA_PYPI) >= 54
+    for conda, pypi in module.CONDA_PYPI.items():
+        assert pattern.fullmatch(conda) and pattern.fullmatch(pypi), (conda, pypi)
+    assert module.CONDA_PYPI["pytorch"] == "torch"
+    assert module.conda_equivalents(None) == module.CONDA_PYPI
