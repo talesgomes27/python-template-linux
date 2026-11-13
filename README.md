@@ -374,6 +374,20 @@ são os mesmos. Confira
 `pyinit --help`: o script instalado é independente do checkout e sua atualização
 exige a instalação aprovada do componente no Data Lab.
 
+## Desenvolver o gerador
+
+`scripts/init_project.sh` continua sendo um único arquivo, mas é gerado: o
+Bash vive em `scripts/init_project.sh.in` e o Python embutido em
+`scripts/pyinit/*.py`, onde é verificado pelo Ruff e testado diretamente.
+Não edite o arquivo gerado; altere as fontes e regrave-o:
+
+```bash
+uv run python scripts/build_init_project.py
+uv run python scripts/build_init_project.py --check   # falha se desatualizado
+```
+
+A suíte de testes e o CI recusam um `init_project.sh` fora de sincronia.
+
 ## Como alternar a versão do Python no projeto
 
 Se outro projeto precisar de uma versão específica (exemplo: Python 3.11 ou 3.13), execute na raiz do repositório:
@@ -420,7 +434,10 @@ python-template-linux/
 ├── docs/                          # Documentação técnica e ADRs de arquitetura
 │   └── migration-recipe-for-agents.md # Receita detalhada para migração de repositórios legados
 ├── scripts/
-│   └── init_project.sh            # Script utilitário pyinit para novos projetos
+│   ├── init_project.sh            # Script pyinit distribuído (arquivo único, gerado)
+│   ├── init_project.sh.in         # Modelo Bash do gerador
+│   ├── pyinit/                    # Módulos Python embutidos no gerador
+│   └── build_init_project.py      # Monta init_project.sh a partir das fontes
 ├── src/python_template_linux/     # Código fonte (src-layout)
 ├── tests/                         # Testes unitários com pytest
 ├── .gitignore                     # Filtro de arquivos efêmeros

@@ -1,5 +1,25 @@
 # Validação do gerador
 
+## Extração do Python embutido — 2026-11-13
+
+O Python que vivia em três heredocs de `scripts/init_project.sh` passou para
+`scripts/pyinit/{envrc_snapshot,configure_tools,migrate}.py`; o Bash fica em
+`scripts/init_project.sh.in` e `scripts/build_init_project.py` monta o arquivo
+único distribuído, que continua sendo o artefato conferido por checksum.
+
+- Sem mudança de comportamento pretendida: mesmas chamadas
+  `/usr/bin/python3 -I -B -`, mesmos argumentos, mensagens e códigos de saída.
+  Cada módulo ganhou uma guarda `if __name__ == "__main__"`, o que permite
+  importá-lo nos testes sem executar a entrada da CLI.
+- `envrc_snapshot.py` foi reformatado pelo Ruff e dividido em funções; os
+  padrões Ruff/pytest de `configure_tools.py` viraram a constante `DEFAULTS`,
+  com os mesmos bytes.
+- O arquivo gerado recebe um aviso de duas linhas após o shebang; seu checksum
+  muda, portanto a versão fixada no Data Lab precisa de atualização aprovada.
+- Testes novos em `tests/test_pyinit_modules.py` cobrem diretamente as funções
+  de restrição de versão, `setup.py` estático, composição TOML e revisão do
+  `.envrc`, além da sincronia entre fontes e arquivo gerado.
+
 ## Correções de revisão e endurecimento do CI — 2026-11-13
 
 - `--archetype` desconhecido é recusado na leitura dos argumentos (código 2),

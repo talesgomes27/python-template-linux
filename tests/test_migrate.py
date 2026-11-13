@@ -1,6 +1,5 @@
 """Migração real de arquivos; somente resolução/downloads do uv são simulados."""
 
-import ast
 import json
 import os
 import shutil
@@ -9,7 +8,9 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -754,7 +755,9 @@ def test_reviewed_ambiguous_semantics_block_before_any_write(
 
 
 def test_copy_failure_keeps_private_backup_ignored_and_originals_intact(
-    legacy: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch
+    legacy: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    pyinit: Callable[[str], ModuleType],
 ) -> None:
     project, _ = legacy
     (project / "requirements.txt").write_text("requests\n")
@@ -762,27 +765,18 @@ def test_copy_failure_keeps_private_backup_ignored_and_originals_intact(
     old = project / ".venv"
     old.mkdir()
     inode = old.stat().st_ino
-    body = (
-        SCRIPT.read_text()
-        .split("<<'PYINIT_MIGRATE'\n", 1)[1]
-        .split("\nPYINIT_MIGRATE\n", 1)[0]
-    )
-    module = ast.parse(body)
-    assert isinstance(module.body[-1], ast.Try)
-    module.body.pop()  # Importar apenas funcoes; nunca executar a entrada da CLI.
-    scope: dict = {}
-    exec(compile(module, str(SCRIPT), "exec"), scope)
-    original_atomic = scope["atomic"]
+    module = pyinit("migrate")
+    original_atomic = module.atomic
 
     def fail_copy(path: Path, data: bytes, mode: int = 0o600) -> None:
         if path.name == "requirements.txt" and path.parent.name == "files":
             raise OSError("artificial copy failure")
         original_atomic(path, data, mode)
 
-    monkeypatch.setitem(scope, "atomic", fail_copy)
-    plan, originals, output = scope["plan_migration"](project, "3.13.11")
+    monkeypatch.setattr(module, "atomic", fail_copy)
+    plan, originals, output = module.plan_migration(project, "3.13.11")
     with pytest.raises(OSError, match="artificial copy failure"):
-        scope["apply_migration"](plan, originals, output, "/unused/uv")
+        module.apply_migration(plan, originals, output, "/unused/uv")
     assert old.stat().st_ino == inode
     assert (project / ".envrc").read_text() == "export PRIVATE=artificial-test-value\n"
     assert (project / "requirements.txt").read_text() == "requests\n"
