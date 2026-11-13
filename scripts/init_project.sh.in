@@ -1,0 +1,550 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# init_project.sh: Inicializador universal de projetos Python para Linux
+# Integração: uv, pyproject.toml (PEP 621), Ruff, Pytest, VS Code, Positron e RStudio
+# ==============================================================================
+
+set -euo pipefail
+# Não herdar uma umask permissiva do terminal.
+umask 077
+
+UV_BIN="${UV_BIN:-$HOME/.local/bin/uv}"
+PYTHON_DEFAULT="3.12"
+ARCHETYPE="universal"
+TARGET_DIR="."
+FIX_PERMISSIONS=false
+SYNC=false
+ALLOW_DIRENV=false
+INIT_OPTIONS=false
+TARGET_SET=false
+MIGRATE=false
+DRY_RUN=false
+PYTHON_SET=false
+ARCHETYPE_SET=false
+
+show_help() {
+    cat <<EOF
+Uso: $(basename "$0") [DIRETORIO] [OPCOES]
+
+Argumentos:
+  DIRETORIO              Caminho ou nome da pasta do novo projeto (padrao: diretorio atual)
+
+Opcoes:
+  -p, --python VERSAO    Versao do Python a fixar (padrao: 3.12)
+  -a, --archetype TIPO   Arquétipo do projeto:
+                           universal : Base limpa com pytest e ruff (padrao)
+                           ds        : Data Science (polars, duckdb, pyarrow, ipykernel; JupyterLab no grupo notebook)
+                           api       : Web APIs (fastapi, pydantic, httpx)
+                           cli       : Linha de comando (typer, rich)
+  -h, --help             Exibe esta mensagem de ajuda
+
+Migracao de projeto legado (Python do sistema >=3.11):
+  --migrate              Detecta formato, revisa plano e migra com backup
+  --dry-run              Com --migrate, apenas diagnostica; nao cria estado
+  --python VERSAO        Na migracao, usa CPython gerenciado ja instalado
+                         (padrao: versao do geral, fallback 3.12)
+
+Manutencao de projeto existente (exige .venv; nao reinicializa o projeto):
+  --fix-permissions      Revisa e repara permissoes via Data Lab Dotfiles
+  --sync                 Com --fix-permissions, confirma e executa uv sync
+  --allow-direnv         Com --fix-permissions, revisa e confirma direnv allow
+
+DEVSHELL_BIN deve apontar para /caminho/data-lab-dotfiles/bin/devshell
+quando devshell nao estiver no PATH. Requer Python do sistema em /usr/bin/python3.
+
+Exemplos:
+  $(basename "$0") meu-projeto
+  $(basename "$0") analise-vendas --archetype ds --python 3.12
+  $(basename "$0") api-pedidos -a api -p 3.13
+  $(basename "$0") projeto-legado --migrate --dry-run
+  $(basename "$0") projeto-legado --migrate --python 3.13.11
+  $(basename "$0") --fix-permissions
+  $(basename "$0") --fix-permissions --sync --allow-direnv
+
+Cria .envrc para Data Lab Dotfiles, preservando um arquivo existente.
+Na criacao, revise-o e execute direnv allow . manualmente para habilitar a troca.
+Na criacao, umask 077 protege novos caminhos; permissoes existentes sao preservadas.
+Configuracoes IDE/R regulares de vinculo unico sao preservadas.
+Symlinks, hardlinks e tipos inesperados nesses destinos bloqueiam antes do uv.
+Criacao usa a .venv local; projetos pais e ambientes redirecionados sao recusados.
+Criacao recusa caminhos fisicos terminados em LF, inclusive destino . e aliases.
+Criacao exige /usr/bin/python3 >=3.11 para compor Ruff/pytest com tomllib.
+Configuracoes Ruff/pytest existentes sao preservadas; somente familias ausentes recebem padroes.
+Falhas podem preservar etapas anteriores; nao ha rollback automatico da criacao.
+Sem tests/ existente, cria tests/test_smoke.py; arquetipo desconhecido e recusado.
+Git pode ser inicializado, sem stage, commit ou push automatico.
+EOF
+}
+
+fail() {
+    echo "Erro: $*" >&2
+    exit 2
+}
+
+confirm() {
+    local answer
+    printf '%s [s/N] ' "$1" >&2
+    if ! IFS= read -r answer || [[ "${answer,,}" != s && "${answer,,}" != sim ]]; then
+        echo "Etapa cancelada; as etapas seguintes nao foram executadas." >&2
+        exit 1
+    fi
+}
+
+# O Python do sistema inspeciona bytes/metadados sem importar codigo do projeto.
+envrc_snapshot() {
+    /usr/bin/python3 -I -B - "$1" "${2-}" <<'PY'
+@@PYINIT_EMBED:envrc_snapshot.py@@
+PY
+}
+
+resolve_uv() {
+    if command -v "$UV_BIN" &>/dev/null; then
+        UV_CMD="$(command -v "$UV_BIN")"
+    elif command -v uv &>/dev/null; then
+        UV_CMD="$(command -v uv)"
+    else
+        fail "uv nao encontrado; instale-o explicitamente antes de continuar."
+    fi
+    [[ "$UV_CMD" == /* ]] || UV_CMD="$PWD/$UV_CMD"
+}
+
+creation_uv() (
+    local status
+    unset UV_PROJECT UV_WORKING_DIR UV_WORKING_DIRECTORY UV_ACTIVE UV_PYTHON
+    unset VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV PYTHONHOME PYTHONPATH
+    if UV_PROJECT_ENVIRONMENT="$creation_project/.venv" "$UV_CMD" "$@"; then
+        return 0
+    else
+        status=$?
+        echo "Preparo interrompido: etapas anteriores podem permanecer aplicadas; nenhuma reversao automatica foi executada." >&2
+        return "$status"
+    fi
+)
+
+inspect_creation_scope() {
+    local parent=${creation_project%/*}
+    [[ -n "$parent" ]] || parent=/
+    while :; do
+        if [[ -d "$parent" && ! -x "$parent" ]]; then
+            fail "Diretorio pai sem permissao de busca: $parent."
+        fi
+        # Sem parser TOML novo: nao descobrir/administrar projetos pais implicitamente.
+        if [[ -e "$parent/pyproject.toml" || -L "$parent/pyproject.toml" ]]; then
+            fail "Projeto/workspace pai detectado em $parent; administre esse escopo explicitamente com uv. Nenhuma etapa de criacao foi executada."
+        fi
+        [[ "$parent" != / ]] || break
+        parent=${parent%/*}
+        [[ -n "$parent" ]] || parent=/
+    done
+}
+
+inspect_venv_paths() {
+    local directory=$1 path name resolved
+    [[ ! -L "$directory" && -d "$directory" && -r "$directory" && -x "$directory" ]] || fail ".venv com diretorio irregular ou sem acesso: $directory."
+    for path in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+        [[ -e "$path" || -L "$path" ]] || continue
+        if [[ -L "$path" ]]; then
+            name=${path##*/}
+            if [[ ${path%/*} == "$creation_project/.venv/bin" && ("$name" == python || "$name" == python3 || "$name" =~ ^python3\.[0-9]+$) ]]; then
+                [[ -f "$path" && -x "$path" ]] || fail "Interpretador da .venv irregular: $path."
+                continue
+            fi
+            resolved=$(realpath -m -- "$path")
+            [[ "$resolved" == "$creation_project/.venv/"* ]] || fail ".venv com link para fora do ambiente: $path. Prepare o ambiente explicitamente."
+        elif [[ -d "$path" ]]; then
+            inspect_venv_paths "$path"
+        fi
+    done
+}
+
+inspect_creation_venv() {
+    local required=${1:-false} venv="$creation_project/.venv" directory
+    if [[ ! -e "$venv" && ! -L "$venv" ]]; then
+        if "$required"; then fail ".venv local ausente apos sync; etapas anteriores podem ter sido concluidas."; fi
+        return 0
+    fi
+    inspect_venv_paths "$venv"
+    [[ ! -L "$venv/pyvenv.cfg" && -f "$venv/pyvenv.cfg" && $(stat -c '%h' -- "$venv/pyvenv.cfg") == 1 ]] || fail ".venv/pyvenv.cfg ausente ou irregular."
+    for directory in "$venv/bin/python" "$venv/bin/python3"; do
+        [[ -f "$directory" && -x "$directory" ]] || fail "Interpretador da .venv ausente ou nao executavel: $directory."
+    done
+    [[ "$venv/bin/python" -ef "$venv/bin/python3" ]] || fail "Interpretadores da .venv divergentes."
+}
+
+# Somente os destinos IDE/R da criacao; nenhum arquivo existente e reescrito.
+inspect_creation_configs() {
+    local base=$1 file path state directory
+    for directory in "$base" "$base/.vscode"; do
+        if [[ -d "$directory" && ! -x "$directory" ]]; then
+            fail "Conflito em $directory: diretorio sem permissao de busca; configuracoes nao podem ser inspecionadas."
+        fi
+    done
+    if [[ -L "$base/.vscode" || (-e "$base/.vscode" && ! -d "$base/.vscode") ]]; then
+        fail "Conflito em $base/.vscode: esperado diretorio sem symlink."
+    fi
+    for file in "${CONFIG_FILES[@]}"; do
+        path="$base/$file"
+        if [[ -L "$path" || (-e "$path" && ! -f "$path") ]]; then
+            fail "Conflito em $path: esperado arquivo regular sem symlink."
+        fi
+        state=absent
+        if [[ -e "$path" ]]; then
+            [[ $(stat -c '%h' -- "$path") == 1 ]] || fail "Conflito em $path: arquivo com multiplos links ou impossivel de inspecionar."
+            state=preserved
+        fi
+        if [[ -n ${CONFIG_STATES[$file]-} && ${CONFIG_STATES[$file]} != "$state" ]]; then
+            fail "Conflito em $path: destino surgiu ou mudou apos a inspecao."
+        fi
+        CONFIG_STATES[$file]=$state
+    done
+}
+
+write_creation_config() {
+    local file=$1 temporary
+    [[ ${CONFIG_STATES[$file]} != preserved ]] || return 0
+    (
+        if [[ "$file" == .vscode/settings.json ]]; then
+            [[ ! -L .vscode && -d .vscode ]] || fail "Conflito em .vscode: diretorio mudou antes da escrita."
+            # Gravar pelo cwd fisico evita atravessar um novo link em .vscode.
+            cd -P -- .vscode || exit 2
+            [[ "$PWD" == "$creation_project/.vscode" ]] || fail "Conflito em .vscode: caminho fisico inesperado."
+            file=settings.json
+        fi
+        temporary=$(mktemp -d -- .pyinit-config.XXXXXX) || exit 2
+        trap 'rm -f -- "$temporary/content"; rmdir -- "$temporary"' EXIT
+        cat >"$temporary/content" || exit 2
+        # ln -T sem force recusa qualquer destino existente, inclusive FIFO/link.
+        ln -T -- "$temporary/content" "$file"
+    ) || fail "Conflito em $1: criacao exclusiva recusada; configuracao existente preservada."
+}
+
+configure_creation_tools() {
+    /usr/bin/python3 -I -B - "$1" "$2" <<'PYINIT_TOOLS'
+@@PYINIT_EMBED:configure_tools.py@@
+PYINIT_TOOLS
+}
+
+maintain_project() {
+    local devshell_cmd direnv_cmd envrc_token workspace_dir project_dir
+    local -a sync_args
+    [[ -d "$TARGET_DIR" ]] || fail "o diretorio do projeto deve existir."
+    if ! devshell_cmd=$(command -v "${DEVSHELL_BIN:-devshell}"); then
+        fail "Data Lab CLI ausente. Defina DEVSHELL_BIN=/caminho/data-lab-dotfiles/bin/devshell."
+    fi
+    [[ "$devshell_cmd" == /* && -x "$devshell_cmd" ]] || fail "DEVSHELL_BIN deve ser um executavel com caminho absoluto."
+    if "$SYNC"; then
+        resolve_uv
+        [[ -f "$TARGET_DIR/pyproject.toml" ]] || fail "--sync exige pyproject.toml existente."
+        # --project ainda pode descobrir o workspace pai e alterar seu lock.
+        if ! workspace_dir=$(
+            unset VIRTUAL_ENV UV_PROJECT UV_WORKING_DIR
+            "$UV_CMD" workspace dir --no-cache --offline --project "$TARGET_DIR"
+        ); then
+            fail "nao foi possivel inspecionar o workspace; --sync exige uv com workspace dir."
+        fi
+        project_dir=$(cd -- "$TARGET_DIR" && pwd -P)
+        [[ "$workspace_dir" == "$project_dir" ]] || fail "--sync recusado: raiz do workspace fora do projeto ($workspace_dir). Administre esse workspace explicitamente."
+    fi
+    if "$ALLOW_DIRENV"; then
+        [[ -x /usr/bin/python3 ]] || fail "Python do sistema ausente em /usr/bin/python3."
+        if ! direnv_cmd=$(command -v direnv); then
+            fail "direnv nao encontrado; instale-o explicitamente antes de continuar."
+        fi
+    fi
+    # O backend valida o caminho original, incluindo symlinks e componentes .. .
+    "$devshell_cmd" project fix-permissions --path "$TARGET_DIR"
+    "$devshell_cmd" project doctor --path "$TARGET_DIR"
+    cd -- "$TARGET_DIR"
+    if "$SYNC"; then
+        sync_args=(sync --project "$PWD" --python "$PWD/.venv/bin/python" --no-python-downloads)
+        if [[ -e uv.lock || -L uv.lock ]]; then
+            sync_args+=(--locked)
+        else
+            echo "Sem uv.lock: a sincronizacao podera criar o lock." >&2
+        fi
+        printf 'Comando solicitado: ' >&2
+        printf '%q ' "$UV_CMD" "${sync_args[@]}" >&2
+        printf '\n' >&2
+        confirm "Sincronizar dependencias nesta .venv? Pode instalar/remover pacotes e executar builds do projeto."
+        (
+            unset VIRTUAL_ENV UV_PROJECT UV_WORKING_DIR
+            # Nunca usar um destino compartilhado herdado do terminal.
+            export UV_PROJECT_ENVIRONMENT="$PWD/.venv"
+            "$UV_CMD" "${sync_args[@]}"
+        )
+        "$devshell_cmd" project doctor --path "$PWD"
+    fi
+    if "$ALLOW_DIRENV"; then
+        envrc_token=$(envrc_snapshot review)
+        confirm "Autorizar este .envrc com direnv allow .? Seu conteudo podera executar comandos."
+        envrc_snapshot verify "$envrc_token"
+        "$direnv_cmd" allow .
+    fi
+    echo "Manutencao concluida. Execute direnv reload para repetir a selecao do ambiente."
+}
+
+migrate_project() {
+    local migration_python=""
+    "$PYTHON_SET" && migration_python="$PYTHON_DEFAULT"
+    /usr/bin/python3 -I -B - "$TARGET_DIR" "$migration_python" "$DRY_RUN" 3<&0 <<'PYINIT_MIGRATE'
+@@PYINIT_EMBED:migrate.py@@
+PYINIT_MIGRATE
+}
+
+# Parsing de argumentos
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -p | --python)
+            [[ $# -ge 2 && "$2" != -* ]] || fail "--python exige uma versao."
+            INIT_OPTIONS=true
+            PYTHON_SET=true
+            PYTHON_DEFAULT="$2"
+            shift 2
+            ;;
+        -a | --archetype)
+            [[ $# -ge 2 && "$2" != -* ]] || fail "--archetype exige um tipo."
+            INIT_OPTIONS=true
+            ARCHETYPE_SET=true
+            ARCHETYPE="$2"
+            case "$ARCHETYPE" in
+                universal | ds | api | cli) ;;
+                *) fail "Arquetipo desconhecido '$ARCHETYPE'; use universal, ds, api ou cli." ;;
+            esac
+            shift 2
+            ;;
+        --migrate)
+            MIGRATE=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --fix-permissions)
+            FIX_PERMISSIONS=true
+            shift
+            ;;
+        --sync)
+            SYNC=true
+            shift
+            ;;
+        --allow-direnv)
+            ALLOW_DIRENV=true
+            shift
+            ;;
+        -h | --help)
+            show_help
+            exit 0
+            ;;
+        -*)
+            echo "Erro: Opcao desconhecida $1" >&2
+            show_help
+            exit 1
+            ;;
+        *)
+            "$TARGET_SET" && fail "informe somente um diretorio."
+            TARGET_DIR="$1"
+            TARGET_SET=true
+            shift
+            ;;
+    esac
+done
+
+if "$MIGRATE"; then
+    if "$FIX_PERMISSIONS" || "$SYNC" || "$ALLOW_DIRENV" || "$ARCHETYPE_SET"; then
+        fail "--migrate nao aceita --fix-permissions, --sync, --allow-direnv ou --archetype."
+    fi
+    migrate_project
+    exit 0
+fi
+"$DRY_RUN" && fail "--dry-run exige --migrate."
+
+if "$FIX_PERMISSIONS"; then
+    "$INIT_OPTIONS" && fail "--fix-permissions nao aceita --python ou --archetype."
+    maintain_project
+    exit 0
+fi
+if "$SYNC" || "$ALLOW_DIRENV"; then
+    fail "--sync e --allow-direnv exigem --fix-permissions."
+fi
+resolve_uv
+
+for tool in stat mktemp ln rm rmdir realpath; do
+    command -v "$tool" &>/dev/null || fail "$tool (coreutils) necessario para criar configuracoes sem sobrescrita."
+done
+CONFIG_FILES=(.vscode/settings.json .Renviron .Rprofile)
+declare -A CONFIG_STATES=()
+inspect_creation_configs "$TARGET_DIR"
+# A sentinela conserva LFs finais; retirar apenas o LF emitido pelo comando.
+creation_project=$(realpath -m -- "$TARGET_DIR" && printf .) || fail "Nao foi possivel resolver o caminho fisico do projeto."
+creation_project=${creation_project%$'\n.'}
+[[ "$creation_project" != *$'\n' ]] || fail "Caminho fisico terminado em LF nao suportado; nenhuma chamada uv foi executada."
+inspect_creation_scope
+inspect_creation_venv
+[[ -x /usr/bin/python3 ]] || fail "Criacao exige /usr/bin/python3 >=3.11 com tomllib."
+configure_creation_tools "$TARGET_DIR/pyproject.toml" check
+
+echo "==> Configurando projeto Python..."
+echo "    Diretorio: $TARGET_DIR"
+echo "    Python:    $PYTHON_DEFAULT"
+echo "    Arquetipo: $ARCHETYPE"
+
+# 1. Criar e entrar no diretorio
+if [ "$TARGET_DIR" != "." ]; then
+    mkdir -p "$TARGET_DIR"
+    cd "$TARGET_DIR"
+fi
+
+PROJECT_NAME="$(basename "$PWD")"
+creation_location=$(pwd -P && printf .) || fail "Nao foi possivel conferir o diretorio fisico do projeto."
+creation_location=${creation_location%$'\n.'}
+[[ "$creation_location" == "$creation_project" ]] || fail "Diretorio do projeto mudou durante o preparo."
+
+# 2. Garantir runtime do Python
+echo "==> Verificando runtime Python $PYTHON_DEFAULT..."
+creation_uv python install "$PYTHON_DEFAULT"
+
+# 3. Inicializar projeto com uv
+if [ ! -f "pyproject.toml" ]; then
+    echo "==> Inicializando pyproject.toml e estrutura base..."
+    creation_uv init --app --package --python "$PYTHON_DEFAULT" --name "$PROJECT_NAME" --no-workspace
+fi
+
+# 4. Fixar versao no .python-version
+creation_uv python pin "$PYTHON_DEFAULT" --no-project
+
+# 5. Adicionar dependencias de desenvolvimento
+echo "==> Configurando ferramentas de teste e lint..."
+creation_uv add --python "$PYTHON_DEFAULT" --dev pytest pytest-cov ruff
+
+# 6. Adicionar pacotes especificos de cada arquetipo
+case "$ARCHETYPE" in
+    ds)
+        echo "==> Adicionando stack de Data Science (polars, duckdb, pyarrow, ipykernel e JupyterLab)..."
+        creation_uv add --python "$PYTHON_DEFAULT" polars duckdb pyarrow
+        creation_uv add --python "$PYTHON_DEFAULT" --dev ipykernel
+        creation_uv add --python "$PYTHON_DEFAULT" --group notebook jupyterlab
+        ;;
+    api)
+        echo "==> Adicionando stack de APIs (fastapi, pydantic, httpx)..."
+        creation_uv add --python "$PYTHON_DEFAULT" fastapi pydantic httpx
+        ;;
+    cli)
+        echo "==> Adicionando stack de CLI (typer, rich)..."
+        creation_uv add --python "$PYTHON_DEFAULT" typer rich
+        ;;
+    universal)
+        # Nenhuma dependencia extra alem das de dev
+        ;;
+esac
+
+# 7. Compor somente familias ausentes, sem reescrever configuracoes existentes.
+echo "==> Preparando configuracoes Ruff/pytest..."
+configure_creation_tools pyproject.toml apply
+
+# 8. Integracao com IDEs (VS Code e Positron)
+inspect_creation_configs .
+[[ -d .vscode ]] || mkdir -- .vscode
+echo "==> Preparando configuracoes IDE/R; arquivos existentes serao preservados..."
+write_creation_config .vscode/settings.json <<'EOF'
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "explicit",
+      "source.organizeImports": "explicit"
+    }
+  }
+}
+EOF
+
+# 9. Integracao com RStudio e Quarto CLI (.Renviron e .Rprofile)
+write_creation_config .Renviron <<'EOF'
+RETICULATE_PYTHON=.venv/bin/python
+EOF
+
+write_creation_config .Rprofile <<'EOF'
+# Vincula o reticulate ao ambiente virtual gerenciado pelo uv
+if (file.exists(".venv/bin/python")) {
+  Sys.setenv(RETICULATE_PYTHON = file.path(getwd(), ".venv/bin/python"))
+}
+EOF
+
+# 9b. Teste inicial: testpaths aponta para tests/; um diretorio existente e preservado.
+if [ ! -e tests ] && [ ! -L tests ]; then
+    mkdir -- tests
+    (
+        set -o noclobber
+        cat >tests/test_smoke.py <<'EOF'
+"""Teste inicial do projeto; substitua pelos testes reais."""
+
+
+def test_smoke() -> None:
+    assert True
+EOF
+    )
+fi
+
+# 10. Sincronizar ambiente virtual
+echo "==> Criando e sincronizando .venv..."
+creation_uv sync --python "$PYTHON_DEFAULT"
+inspect_creation_venv true
+
+# 11. Preparar a integracao opcional com direnv sem conceder autorizacao.
+if [ -e ".envrc" ] || [ -L ".envrc" ]; then
+    echo "==> .envrc existente preservado; revise a integracao manualmente."
+else
+    (
+        set -o noclobber
+        printf '%s\n' 'use devshell_python' >.envrc
+    )
+fi
+
+# 12. Ajustar .gitignore
+if [ -f ".gitignore" ]; then
+    if ! grep -qxF '.Rproj.user/' .gitignore; then
+        cat >>.gitignore <<'EOF'
+
+# RStudio e reticulate locais
+.Rhistory
+.RData
+.Rproj.user/
+EOF
+    fi
+fi
+
+# 13. Inicializar Git caso ainda nao exista, inclusive em worktrees.
+if [ ! -e ".git" ] && [ ! -L ".git" ] && command -v git &>/dev/null; then
+    echo "==> Inicializando repositorio Git..."
+    git init -b main
+fi
+
+echo ""
+echo "=============================================================================="
+echo " Projeto configurado com sucesso!"
+echo " Pasta: $(pwd)"
+echo " Interpretador: $(pwd)/.venv/bin/python"
+echo "=============================================================================="
+echo ""
+echo "Como usar:"
+echo "  uv run pytest                     # Executar testes"
+echo "  uv run ruff check .               # Verificar linter"
+echo "  uv run python <script.py>         # Executar sem precisar de 'source venv'"
+echo ""
+echo "Troca automatica opcional (Data Lab Dotfiles + direnv):"
+echo "  Revise o .envrc completo; se ja existia, inclua use devshell_python quando apropriado."
+echo "  direnv allow .                   # Autorizacao manual apos a revisao"
+echo "  A troca ocorre no proximo prompt; ancestrais existentes precisam ser seguros."
+echo "Nenhum arquivo foi colocado em stage e nenhum commit ou push foi executado."
+echo ""
+echo "Arquivos de configuracao IDE/R:"
+for file in "${CONFIG_FILES[@]}"; do
+    if [[ ${CONFIG_STATES[$file]} == preserved ]]; then
+        echo "  $file: preservado; conteudo e integracao nao foram alterados nem verificados."
+    else
+        echo "  $file: criado com a configuracao padrao para .venv."
+    fi
+done
+echo ""

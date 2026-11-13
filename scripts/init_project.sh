@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ARQUIVO GERADO por scripts/build_init_project.py: nao edite diretamente.
+# Fontes: scripts/init_project.sh.in e scripts/pyinit/*.py
 # ==============================================================================
 # init_project.sh: Inicializador universal de projetos Python para Linux
 # Integração: uv, pyproject.toml (PEP 621), Ruff, Pytest, VS Code, Positron e RStudio
@@ -93,32 +95,75 @@ confirm() {
 # O Python do sistema inspeciona bytes/metadados sem importar codigo do projeto.
 envrc_snapshot() {
     /usr/bin/python3 -I -B - "$1" "${2-}" <<'PY'
+"""Revisa e confere o .envrc do diretorio atual sem executa-lo.
+
+Uso: envrc_snapshot.py review | verify TOKEN
+"""
+
 import hashlib
 import os
 import stat
 import sys
 
-try:
-    fd = os.open('.envrc', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, 'rb') as stream:
+
+def snapshot() -> tuple[str, bytes]:
+    """Retorna o token de identidade/conteudo e os bytes do .envrc."""
+    fd = os.open(".envrc", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o022 or info.st_nlink != 1):
-            raise ValueError('.envrc deve ser arquivo regular proprio, sem escrita de grupo/outros e sem hardlinks')
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o022
+            or info.st_nlink != 1
+        ):
+            raise ValueError(
+                ".envrc deve ser arquivo regular proprio, "
+                "sem escrita de grupo/outros e sem hardlinks"
+            )
         data = stream.read()
-    identity = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink)
-    token = hashlib.sha256(repr(identity).encode() + data).hexdigest()
-    if sys.argv[1] == 'review':
-        print('\n.envrc completo (controles escapados; nao executado):', file=sys.stderr)
-        content = data.decode('utf-8', errors='backslashreplace')
-        print(''.join(c if c.isprintable() or c in '\n\t' else ascii(c)[1:-1]
-                      for c in content), file=sys.stderr)
-        print(token)
-    elif token != sys.argv[2]:
-        raise ValueError('.envrc mudou apos a revisao; execute novamente e revise o novo conteudo')
-except (OSError, ValueError) as exc:
-    print(f'Erro: {exc}', file=sys.stderr)
-    sys.exit(2)
+    identity = (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_gid,
+        info.st_nlink,
+    )
+    return hashlib.sha256(repr(identity).encode() + data).hexdigest(), data
+
+
+def escaped(data: bytes) -> str:
+    """Torna visiveis os caracteres de controle, preservando LF e TAB."""
+    content = data.decode("utf-8", errors="backslashreplace")
+    return "".join(
+        c if c.isprintable() or c in "\n\t" else ascii(c)[1:-1] for c in content
+    )
+
+
+def main(argv: list[str]) -> int:
+    try:
+        token, data = snapshot()
+        if argv[1] == "review":
+            print(
+                "\n.envrc completo (controles escapados; nao executado):",
+                file=sys.stderr,
+            )
+            print(escaped(data), file=sys.stderr)
+            print(token)
+        elif token != argv[2]:
+            raise ValueError(
+                ".envrc mudou apos a revisao; "
+                "execute novamente e revise o novo conteudo"
+            )
+    except (OSError, ValueError) as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
 PY
 }
 
@@ -245,6 +290,11 @@ write_creation_config() {
 
 configure_creation_tools() {
     /usr/bin/python3 -I -B - "$1" "$2" <<'PYINIT_TOOLS'
+"""Compoe os padroes Ruff/pytest ausentes em um pyproject.toml.
+
+Uso: configure_tools.py PYPROJECT check|apply
+"""
+
 import sys
 from pathlib import Path
 
@@ -254,23 +304,9 @@ except ImportError:
     print("Erro: a criacao exige /usr/bin/python3 >=3.11 com tomllib.", file=sys.stderr)
     sys.exit(2)
 
-path = Path(sys.argv[1])
-mode = sys.argv[2]
-try:
-    if mode == "check" and not path.is_file():
-        sys.exit(0)
-    original = path.read_bytes()
-    document = tomllib.loads(original.decode("utf-8"))
-    tool = document.get("tool", {})
-    if not isinstance(tool, dict):
-        raise ValueError("tool deve ser uma tabela; revise a configuracao manualmente")
-    for name in ("ruff", "pytest"):
-        if name in tool and not isinstance(tool[name], dict):
-            raise ValueError(
-                f"tool.{name} deve ser uma tabela; revise a configuracao manualmente"
-            )
-    defaults = {
-        "ruff": """
+
+DEFAULTS = {
+    "ruff": """
 [tool.ruff]
 line-length = 88
 
@@ -281,33 +317,61 @@ select = ["E", "F", "I", "B", "UP"]
 quote-style = "double"
 indent-style = "space"
 """,
-        "pytest": """
+    "pytest": """
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra -q --strict-markers"
 """,
-    }
-    addition = "".join(block for name, block in defaults.items() if name not in tool)
-    if addition:
-        try:
-            tomllib.loads(original.decode("utf-8") + addition)
-        except tomllib.TOMLDecodeError as exc:
+}
+
+
+def main(argv: list[str]) -> int:
+    path = Path(argv[1])
+    mode = argv[2]
+    try:
+        if mode == "check" and not path.is_file():
+            return 0
+        original = path.read_bytes()
+        document = tomllib.loads(original.decode("utf-8"))
+        tool = document.get("tool", {})
+        if not isinstance(tool, dict):
             raise ValueError(
-                "composicao exige reescrever tabelas existentes "
-                "(por exemplo inline); revise manualmente"
-            ) from exc
-    if mode == "apply":
+                "tool deve ser uma tabela; revise a configuracao manualmente"
+            )
+        for name in ("ruff", "pytest"):
+            if name in tool and not isinstance(tool[name], dict):
+                raise ValueError(
+                    f"tool.{name} deve ser uma tabela; "
+                    "revise a configuracao manualmente"
+                )
+        addition = "".join(
+            block for name, block in DEFAULTS.items() if name not in tool
+        )
         if addition:
-            with path.open("ab") as stream:
-                stream.write(addition.encode("utf-8"))
-        for name in defaults:
-            state = "preservado" if name in tool else "configuracao padrao criada"
-            print(f"  {name}: {state}.")
-except (OSError, UnicodeError, ValueError) as exc:
-    print(f"Erro: {path}: composicao Ruff/pytest recusada: {exc}", file=sys.stderr)
-    sys.exit(2)
+            try:
+                tomllib.loads(original.decode("utf-8") + addition)
+            except tomllib.TOMLDecodeError as exc:
+                raise ValueError(
+                    "composicao exige reescrever tabelas existentes "
+                    "(por exemplo inline); revise manualmente"
+                ) from exc
+        if mode == "apply":
+            if addition:
+                with path.open("ab") as stream:
+                    stream.write(addition.encode("utf-8"))
+            for name in DEFAULTS:
+                state = "preservado" if name in tool else "configuracao padrao criada"
+                print(f"  {name}: {state}.")
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"Erro: {path}: composicao Ruff/pytest recusada: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
 PYINIT_TOOLS
 }
 
@@ -374,6 +438,11 @@ migrate_project() {
     local migration_python=""
     "$PYTHON_SET" && migration_python="$PYTHON_DEFAULT"
     /usr/bin/python3 -I -B - "$TARGET_DIR" "$migration_python" "$DRY_RUN" 3<&0 <<'PYINIT_MIGRATE'
+"""Migra um projeto Python legado para uv com plano revisado e backup.
+
+Uso: migrate.py PROJETO [VERSAO_PYTHON|""] true|false  (confirmacao no fd 3)
+"""
+
 import ast
 import configparser
 import fcntl
@@ -1514,36 +1583,38 @@ def main() -> int:
     return 0
 
 
-try:
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    sys.exit(main())
-except (
-    Refused,
-    OSError,
-    ValueError,
-    TypeError,
-    AttributeError,
-    KeyError,
-    SyntaxError,
-    configparser.Error,
-    subprocess.CalledProcessError,
-    KeyboardInterrupt,
-) as exc:
-    message = (
-        str(exc)
-        if isinstance(exc, (Refused, OSError, subprocess.CalledProcessError))
-        else f"Arquivo invalido ({type(exc).__name__}); revise os manifestos."
-    )
-    if len(sys.argv) > 3 and sys.argv[3] == "true":
-        print(
-            json.dumps(
-                dict(operation="migrate", project=sys.argv[1], blockers=[message]),
-                ensure_ascii=False,
-            )
+if __name__ == "__main__":
+    try:
+        signal.signal(
+            signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt())
         )
-    print(f"Erro de migracao: {message}", file=sys.stderr)
-    sys.exit(2)
-
+        sys.exit(main())
+    except (
+        Refused,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        KeyError,
+        SyntaxError,
+        configparser.Error,
+        subprocess.CalledProcessError,
+        KeyboardInterrupt,
+    ) as exc:
+        message = (
+            str(exc)
+            if isinstance(exc, (Refused, OSError, subprocess.CalledProcessError))
+            else f"Arquivo invalido ({type(exc).__name__}); revise os manifestos."
+        )
+        if len(sys.argv) > 3 and sys.argv[3] == "true":
+            print(
+                json.dumps(
+                    dict(operation="migrate", project=sys.argv[1], blockers=[message]),
+                    ensure_ascii=False,
+                )
+            )
+        print(f"Erro de migracao: {message}", file=sys.stderr)
+        sys.exit(2)
 PYINIT_MIGRATE
 }
 

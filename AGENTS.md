@@ -33,6 +33,13 @@ Este repositório adota a arquitetura canônica de Python moderno para Linux bas
   uv run pytest
   ```
 
-## 4. Migração de Repositórios Legados
+## 4. Gerador `scripts/init_project.sh`
+
+- O arquivo é **gerado**; nunca o edite diretamente. As fontes são
+  `scripts/init_project.sh.in` (Bash) e `scripts/pyinit/*.py` (Python embutido).
+- Após alterar as fontes, execute `uv run python scripts/build_init_project.py`
+  e inclua o arquivo regravado no mesmo commit.
+
+## 5. Migração de Repositórios Legados
 
 Para instruções completas sobre como migrar projetos que utilizam `requirements.txt`, `pipenv`, `poetry` ou `environment.yml` para este padrão, consulte [docs/migration-recipe-for-agents.md](docs/migration-recipe-for-agents.md).
