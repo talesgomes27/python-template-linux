@@ -1,5 +1,7 @@
 """Testes unitários para o módulo core."""
 
+import runpy
+
 from python_template_linux.cli import main
 from python_template_linux.core import format_environment_info, system_diagnostic
 
@@ -32,3 +34,8 @@ def test_cli_main_executes_without_error(capsys):
     captured = capsys.readouterr()
     assert "Python" in captured.out
     assert "Ambiente:" in captured.out
+
+
+def test_package_runs_as_module(capsys):
+    runpy.run_module("python_template_linux", run_name="__main__")
+    assert "Ambiente:" in capsys.readouterr().out

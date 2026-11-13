@@ -19,11 +19,28 @@ OUTPUT = SCRIPTS / "init_project.sh"
 MODULES = SCRIPTS / "pyinit"
 EMBED = re.compile(r"^@@PYINIT_EMBED:([a-z_]+\.py)@@$")
 VERSION = "@@PYINIT_VERSION@@"
+ACTION = re.compile(r"@@ACTION:([\w.-]+/[\w.-]+)@@")
+WORKFLOW = SCRIPTS.parent / ".github/workflows/ci.yml"
 HEREDOC = re.compile(r"<<'([A-Z_]+)'$")
 NOTICE = (
     "# ARQUIVO GERADO por scripts/build_init_project.py: nao edite diretamente.\n"
     "# Fontes: scripts/init_project.sh.in e scripts/pyinit/*.py\n"
 )
+
+
+def pinned_actions() -> dict[str, str]:
+    """Le do CI do template as actions fixadas por SHA, com o comentario de versao.
+
+    O CI gerado para novos projetos reutiliza exatamente essas referencias, que
+    o Dependabot mantem atualizadas no workflow do template.
+    """
+    pattern = re.compile(r"uses:\s*(([\w.-]+/[\w.-]+)@[0-9a-f]{40}\s+#\s*v\S+)\s*$")
+    found = {}
+    for line in WORKFLOW.read_text(encoding="utf-8").splitlines():
+        match = pattern.search(line)
+        if match:
+            found[match[2]] = match[1]
+    return found
 
 
 def render() -> str:
@@ -33,9 +50,16 @@ def render() -> str:
         raise ValueError("o modelo deve comecar com a linha shebang")
     manifest = tomllib.loads((SCRIPTS.parent / "pyproject.toml").read_text())
     version = manifest["project"]["version"]
+    actions = pinned_actions()
+
+    def action(match: re.Match[str]) -> str:
+        if match[1] not in actions:
+            raise ValueError(f"{match[1]}: action sem SHA fixado em {WORKFLOW.name}")
+        return actions[match[1]]
+
     output = [lines[0], NOTICE]
     for previous, line in zip(lines, lines[1:], strict=False):
-        line = line.replace(VERSION, version)
+        line = ACTION.sub(action, line.replace(VERSION, version))
         match = EMBED.match(line.rstrip("\n"))
         if match is None:
             output.append(line)

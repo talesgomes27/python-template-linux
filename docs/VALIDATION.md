@@ -1,5 +1,21 @@
 # Validação do gerador
 
+## Documentação, CI e automação gerada — 2026-11-13
+
+- README reduzido a um resumo de uso; o detalhe do gerador foi movido, sem
+  alteração de conteúdo, para `docs/generator.md`. Os artefatos de
+  planejamento concluídos foram para `docs/archive/`. A receita de migração
+  na raiz já era um symlink para `docs/`, sem duplicação, e não mudou.
+- CI: Python 3.14 na matriz, job de ShellCheck e cobertura mínima de 90% no
+  pacote. A cobertura não mede `scripts/pyinit`, exercitado sobretudo por
+  subprocessos do gerador.
+- Novos projetos recebem `.github/workflows/ci.yml` e
+  `.pre-commit-config.yaml` quando ausentes (`--no-ci`, `--no-pre-commit`).
+  As actions do workflow gerado são copiadas do CI do template na geração do
+  script, mantendo uma única fonte para os SHAs.
+- Validação local: suíte completa aprovada em CPython gerenciado 3.14.6,
+  incluindo as integrações com uv real.
+
 ## Novas opções do gerador (0.2.0) — 2026-11-13
 
 - Criação: `--dry-run` (plano sem criar nada nem chamar uv), `--no-ide`,

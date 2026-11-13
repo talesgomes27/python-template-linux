@@ -39,6 +39,8 @@ Este repositório adota a arquitetura canônica de Python moderno para Linux bas
   `scripts/init_project.sh.in` (Bash) e `scripts/pyinit/*.py` (Python embutido).
 - Após alterar as fontes, execute `uv run python scripts/build_init_project.py`
   e inclua o arquivo regravado no mesmo commit.
+- O mesmo vale após alterar a versão em `pyproject.toml` ou as actions fixadas
+  em `.github/workflows/ci.yml`, que são copiadas para o arquivo gerado.
 
 ## 5. Migração de Repositórios Legados
 

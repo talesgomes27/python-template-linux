@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
 
@@ -63,4 +63,18 @@ jobs:
         run: uv run python scripts/build_init_project.py --check
 
       - name: Executar testes unitários (pytest)
-        run: uv run pytest -v
+        run: uv run pytest -v --cov
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Analisar o gerador
+        run: shellcheck scripts/init_project.sh
