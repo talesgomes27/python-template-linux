@@ -27,6 +27,8 @@ CREATE_ONLY=false
 WITH_IDE=true
 WITH_R=true
 WITH_GIT=true
+WITH_CI=true
+WITH_PRE_COMMIT=true
 RESTORE_ID=""
 LIST_BACKUPS=false
 PYINIT_VERSION="0.2.0"
@@ -48,6 +50,8 @@ Opcoes:
   --no-ide               Nao cria .vscode/settings.json
   --no-r                 Nao cria .Renviron/.Rprofile nem regras R no .gitignore
   --no-git               Nao inicializa repositorio Git
+  --no-ci                Nao cria .github/workflows/ci.yml
+  --no-pre-commit        Nao cria .pre-commit-config.yaml
   --dry-run              Mostra o plano de criacao sem criar nada nem chamar uv
   -V, --version          Exibe a versao do gerador
   -h, --help             Exibe esta mensagem de ajuda
@@ -1848,6 +1852,52 @@ if __name__ == "__main__":
 PYINIT_MIGRATE
 }
 
+# Arquivos de automacao criados somente quando ausentes.
+AUTOMATION_FILES=()
+
+# Estado de um destino relativo a $1: absent, preserved ou blocked (algum
+# componente do caminho e symlink ou nao e diretorio; nada e gravado atraves dele).
+new_file_state() {
+    local base=$1 path=$2 current part
+    local -a parts
+    if [[ -e "$base/$path" || -L "$base/$path" ]]; then
+        echo preserved
+        return 0
+    fi
+    current=$base
+    IFS=/ read -ra parts <<<"${path%/*}"
+    [[ "$path" == */* ]] || parts=()
+    for part in "${parts[@]}"; do
+        current+="/$part"
+        if [[ -L "$current" || (-e "$current" && ! -d "$current") ]]; then
+            echo blocked
+            return 0
+        fi
+    done
+    echo absent
+}
+
+# Grava o stdin em um caminho relativo ao projeto, sem substituir nada.
+write_new_file() {
+    local path=$1 state
+    state=$(new_file_state . "$path")
+    if [[ "$state" != absent ]]; then
+        cat >/dev/null
+        if [[ "$state" == preserved ]]; then
+            echo "  $path: preservado."
+        else
+            echo "  $path: nao criado; um diretorio do caminho e symlink ou nao e diretorio."
+        fi
+        return 0
+    fi
+    [[ "$path" != */* ]] || mkdir -p -- "${path%/*}"
+    (
+        set -o noclobber
+        cat >"$path"
+    ) || fail "Conflito em $path: criacao exclusiva recusada; arquivo existente preservado."
+    echo "  $path: criado."
+}
+
 # Chamadas uv add do arquetipo; $1 executa (creation_uv) ou apenas mostra (show_uv).
 archetype_additions() {
     case "$ARCHETYPE" in
@@ -1911,6 +1961,13 @@ plan_creation() {
     else
         echo "  .envrc: criar (direnv allow continua manual)"
     fi
+    for file in "${AUTOMATION_FILES[@]}"; do
+        case "$(new_file_state "$base" "$file")" in
+            absent) echo "  $file: criar" ;;
+            preserved) echo "  $file: preservar" ;;
+            blocked) echo "  $file: nao criar (caminho com symlink ou nao diretorio)" ;;
+        esac
+    done
     if ! "$WITH_GIT"; then
         echo "  Git: nao inicializar (--no-git)"
     elif [[ -e "$base/.git" || -L "$base/.git" ]]; then
@@ -1966,6 +2023,16 @@ while [[ $# -gt 0 ]]; do
             WITH_GIT=false
             shift
             ;;
+        --no-ci)
+            CREATE_ONLY=true
+            WITH_CI=false
+            shift
+            ;;
+        --no-pre-commit)
+            CREATE_ONLY=true
+            WITH_PRE_COMMIT=false
+            shift
+            ;;
         --restore)
             [[ $# -ge 2 && "$2" != -* ]] || fail "--restore exige o ID de um backup."
             RESTORE_ID="$2"
@@ -2010,7 +2077,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if "$CREATE_ONLY" && { "$MIGRATE" || "$FIX_PERMISSIONS" || "$LIST_BACKUPS" || [[ -n "$RESTORE_ID" ]]; }; then
-    fail "--no-ide, --no-r e --no-git pertencem somente a criacao."
+    fail "--no-ide, --no-r, --no-git, --no-ci e --no-pre-commit pertencem somente a criacao."
 fi
 if "$LIST_BACKUPS" || [[ -n "$RESTORE_ID" ]]; then
     if "$MIGRATE" || "$FIX_PERMISSIONS" || "$SYNC" || "$ALLOW_DIRENV" || "$INIT_OPTIONS"; then
@@ -2049,6 +2116,8 @@ done
 # O proprio uv init criaria um repositorio; --no-git precisa desativar isso.
 INIT_VCS=()
 "$WITH_GIT" || INIT_VCS=(--vcs none)
+"$WITH_CI" && AUTOMATION_FILES+=(.github/workflows/ci.yml)
+"$WITH_PRE_COMMIT" && AUTOMATION_FILES+=(.pre-commit-config.yaml)
 CONFIG_FILES=()
 "$WITH_IDE" && CONFIG_FILES+=(.vscode/settings.json)
 "$WITH_R" && CONFIG_FILES+=(.Renviron .Rprofile)
@@ -2159,6 +2228,57 @@ EOF
     )
 fi
 
+# 9c. Automacao: CI no GitHub Actions e hooks pre-commit com o Ruff do projeto.
+[[ ${#AUTOMATION_FILES[@]} -eq 0 ]] || echo "==> Preparando automacao (CI e pre-commit)..."
+if "$WITH_CI"; then
+    write_new_file .github/workflows/ci.yml <<'EOF'
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pytest
+EOF
+fi
+if "$WITH_PRE_COMMIT"; then
+    write_new_file .pre-commit-config.yaml <<'EOF'
+# Hooks locais: usam o Ruff travado no uv.lock do projeto.
+# Ative com: uvx pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+EOF
+fi
+
 # 10. Sincronizar ambiente virtual
 echo "==> Criando e sincronizando .venv..."
 creation_uv sync --python "$PYTHON_DEFAULT"
@@ -2202,6 +2322,9 @@ echo "==========================================================================
 echo ""
 echo "Como usar:"
 echo "  uv run pytest                     # Executar testes"
+if "$WITH_PRE_COMMIT"; then
+    echo "  uvx pre-commit install            # Ativar os hooks Ruff (opcional)"
+fi
 echo "  uv run ruff check .               # Verificar linter"
 echo "  uv run python <script.py>         # Executar sem precisar de 'source venv'"
 echo ""

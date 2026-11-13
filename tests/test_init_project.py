@@ -1882,3 +1882,83 @@ def test_uv_bin_naming_a_shell_builtin_falls_back_to_path_uv(
     result = run_init(config_creation, workspace / "study")
     assert result.returncode == 0, result.stderr
     assert {call["executable"] for call in uv_details(env)} == {chosen}
+
+
+def test_creation_adds_ci_and_pre_commit_with_template_pinned_actions(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "study"
+    planned = run_init(config_creation, target, "--dry-run")
+    assert "  .github/workflows/ci.yml: criar" in planned.stdout
+    assert "  .pre-commit-config.yaml: criar" in planned.stdout
+    result = run_init(config_creation, target)
+    assert result.returncode == 0, result.stderr
+    workflow = (target / ".github/workflows/ci.yml").read_text()
+    template = (SCRIPT.parent.parent / ".github/workflows/ci.yml").read_text()
+
+    def pinned(text: str) -> set[str]:
+        return {
+            line.split("uses:", 1)[1].strip()
+            for line in text.splitlines()
+            if "uses:" in line
+        }
+
+    assert pinned(workflow) == pinned(template)
+    assert all("@" in ref and "# v" in ref for ref in pinned(workflow))
+    assert "@@" not in workflow
+    for expected in (
+        "permissions:\n  contents: read\n",
+        "persist-credentials: false",
+        "uv sync --locked",
+        "uv run ruff format --check .",
+        "uv run ruff check .",
+        "uv run pytest",
+    ):
+        assert expected in workflow
+    hooks = (target / ".pre-commit-config.yaml").read_text()
+    assert "entry: uv run ruff check --fix" in hooks
+    assert "entry: uv run ruff format" in hooks
+    assert "uvx pre-commit install" in result.stdout
+    for path in (target / ".github", target / ".github/workflows"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+
+
+def test_creation_preserves_existing_automation_and_honours_opt_out(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "study"
+    (target / ".github/workflows").mkdir(parents=True)
+    (target / ".github/workflows/ci.yml").write_text("name: mine\n")
+    (target / ".pre-commit-config.yaml").write_text("repos: []\n")
+    result = run_init(config_creation, target)
+    assert result.returncode == 0, result.stderr
+    assert (target / ".github/workflows/ci.yml").read_text() == "name: mine\n"
+    assert (target / ".pre-commit-config.yaml").read_text() == "repos: []\n"
+    assert "  .github/workflows/ci.yml: preservado." in result.stdout
+    other = workspace / "other"
+    skipped = run_init(config_creation, other, "--no-ci", "--no-pre-commit")
+    assert skipped.returncode == 0, skipped.stderr
+    assert not (other / ".github").exists()
+    assert not (other / ".pre-commit-config.yaml").exists()
+    assert "pre-commit" not in skipped.stdout
+
+
+@pytest.mark.parametrize("blocked", [".github", ".github/workflows"])
+def test_creation_never_writes_ci_through_symlinked_directories(
+    config_creation: tuple[Path, dict[str, str]], blocked: str
+) -> None:
+    workspace, _ = config_creation
+    target = workspace / "study"
+    outside = workspace / "outside"
+    outside.mkdir()
+    (target / blocked).parent.mkdir(parents=True, exist_ok=True)
+    (target / blocked).symlink_to(outside)
+    planned = run_init(config_creation, target, "--dry-run")
+    assert "  .github/workflows/ci.yml: nao criar" in planned.stdout
+    result = run_init(config_creation, target)
+    assert result.returncode == 0, result.stderr
+    assert "  .github/workflows/ci.yml: nao criado" in result.stdout
+    assert list(outside.iterdir()) == []
+    assert (target / ".pre-commit-config.yaml").is_file()

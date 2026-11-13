@@ -39,6 +39,15 @@ ignore = []
 quote-style = "double"
 indent-style = "space"
 
+[tool.coverage.run]
+source = ["python_template_linux"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_also = ['if __name__ == "__main__":']
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]

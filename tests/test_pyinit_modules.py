@@ -251,3 +251,17 @@ def test_modules_run_isolated_from_stdin_like_the_generator(tmp_path: Path) -> N
     )
     assert result.returncode == 0, result.stderr
     assert set(tomllib.loads(manifest.read_text())["tool"]) == {"ruff", "pytest"}
+
+
+def test_builder_requires_pinned_action_in_template_workflow(
+    load_script: Callable[[Path], ModuleType],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = load_script(SCRIPTS / "build_init_project.py")
+    assert set(builder.pinned_actions()) == {"actions/checkout", "astral-sh/setup-uv"}
+    template = tmp_path / "init_project.sh.in"
+    template.write_text("#!/usr/bin/env bash\n# uses: @@ACTION:example/missing@@\n")
+    monkeypatch.setattr(builder, "TEMPLATE", template)
+    with pytest.raises(ValueError, match="example/missing"):
+        builder.render()
