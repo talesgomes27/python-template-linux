@@ -325,8 +325,17 @@ def test_creation_tool_configuration_composes_missing_families(
             }
         }
     )
-    if ruff is not None and pytest_config is not None:
+    # Somente a familia opcional mypy pode ser acrescentada; inline fica intacto.
+    mypy_block = (
+        b'\n[tool.mypy]\nfiles = ["src", "tests"]\n'
+        b"check_untyped_defs = true\nwarn_unused_ignores = true\n"
+    )
+    if configuration.startswith("tool = {"):
         assert final == original
+        assert "mypy: nao adicionado" in result.stdout
+    elif ruff is not None and pytest_config is not None:
+        assert final == original + mypy_block
+    assert final.endswith(mypy_block) is not configuration.startswith("tool = {")
 
 
 @pytest.mark.parametrize("ending", ["crlf", "no-final-newline"])
@@ -1962,3 +1971,23 @@ def test_creation_never_writes_ci_through_symlinked_directories(
     assert "  .github/workflows/ci.yml: nao criado" in result.stdout
     assert list(outside.iterdir()) == []
     assert (target / ".pre-commit-config.yaml").is_file()
+
+
+def test_creation_adds_mypy_tooling_to_new_projects(
+    config_creation: tuple[Path, dict[str, str]],
+) -> None:
+    workspace, env = config_creation
+    target = workspace / "study"
+    result = run_init(config_creation, target)
+    assert result.returncode == 0, result.stderr
+    additions = [c["args"] for c in uv_details(env) if c["args"][0] == "add"]
+    assert additions[0][-4:] == ["pytest", "pytest-cov", "ruff", "mypy"]
+    tool = tomllib.loads((target / "pyproject.toml").read_text())["tool"]
+    assert tool["mypy"] == {
+        "files": ["src", "tests"],
+        "check_untyped_defs": True,
+        "warn_unused_ignores": True,
+    }
+    assert "  mypy: configuracao padrao criada." in result.stdout
+    assert "- run: uv run mypy\n" in (target / ".github/workflows/ci.yml").read_text()
+    assert "entry: uv run mypy\n" in (target / ".pre-commit-config.yaml").read_text()

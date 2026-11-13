@@ -167,12 +167,18 @@ def test_configure_tools_adds_only_missing_families(
     assert manifest.read_bytes() == original
     assert module.main(["configure_tools.py", str(manifest), "apply"]) == 0
     final = manifest.read_bytes()
-    assert final == original + module.DEFAULTS["pytest"].encode()
+    assert (
+        final
+        == original
+        + "".join(module.DEFAULTS[name] for name in ("pytest", "mypy")).encode()
+    )
     data = tomllib.loads(final.decode())
     assert data["tool"]["ruff"] == {"line-length": 101}
     assert data["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests"]
     assert capsys.readouterr().out == (
-        "  ruff: preservado.\n  pytest: configuracao padrao criada.\n"
+        "  ruff: preservado.\n"
+        "  pytest: configuracao padrao criada.\n"
+        "  mypy: configuracao padrao criada.\n"
     )
 
 
@@ -250,7 +256,9 @@ def test_modules_run_isolated_from_stdin_like_the_generator(tmp_path: Path) -> N
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    assert set(tomllib.loads(manifest.read_text())["tool"]) == {"ruff", "pytest"}
+    tools = tomllib.loads(manifest.read_text())["tool"]
+    assert set(tools) == {"ruff", "pytest", "mypy"}
+    assert tools["mypy"]["files"] == ["src", "tests"]
 
 
 def test_builder_requires_pinned_action_in_template_workflow(
@@ -265,3 +273,25 @@ def test_builder_requires_pinned_action_in_template_workflow(
     monkeypatch.setattr(builder, "TEMPLATE", template)
     with pytest.raises(ValueError, match="example/missing"):
         builder.render()
+
+
+def test_configure_tools_never_blocks_on_optional_mypy_family(
+    pyinit: Loader, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b'tool = {ruff = {line-length = 101}, pytest = {addopts = ["-x"]}}\n'
+    module = pyinit("configure_tools")
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_bytes(content)
+    assert module.main(["configure_tools.py", str(manifest), "apply"]) == 0
+    assert manifest.read_bytes() == content
+    assert "  mypy: nao adicionado; componha manualmente.\n" in capsys.readouterr().out
+
+
+def test_configure_tools_preserves_existing_mypy_family(
+    pyinit: Loader, tmp_path: Path
+) -> None:
+    module = pyinit("configure_tools")
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text("[tool.mypy]\nstrict = true\n")
+    assert module.main(["configure_tools.py", str(manifest), "apply"]) == 0
+    assert tomllib.loads(manifest.read_text())["tool"]["mypy"] == {"strict": True}

@@ -55,6 +55,9 @@ uv run pytest
 # Verificar conformidade de linter (Ruff)
 uv run ruff check .
 
+# Verificar tipos (mypy, modo strict no pacote)
+uv run mypy
+
 # Formatar o código automaticamente
 uv run ruff format .
 ```
@@ -70,10 +73,10 @@ bash scripts/init_project.sh ../api-pedidos --archetype api --no-r --dry-run
 ```
 
 O gerador instala o runtime, cria o projeto com `uv init`, adiciona as
-dependências do arquétipo, compõe os padrões Ruff/pytest e sincroniza a
+dependências do arquétipo, compõe os padrões Ruff/pytest/mypy e sincroniza a
 `.venv`. Essas etapas podem baixar arquivos.
 
-| Arquétipo | Dependências além de pytest, pytest-cov e ruff |
+| Arquétipo | Dependências além de pytest, pytest-cov, ruff e mypy |
 |---|---|
 | `universal` (padrão) | nenhuma |
 | `ds` | polars, duckdb, pyarrow; ipykernel (dev); JupyterLab no grupo `notebook` |
@@ -203,6 +206,7 @@ python-template-linux/
 ├── .gitignore                     # Filtro de arquivos efêmeros
 ├── .python-version                # Versão ativa do interpretador (ex: 3.12)
 ├── LICENSE                        # Licença MIT
+├── SECURITY.md                    # Como relatar vulnerabilidades
 ├── AGENTS.md                      # Regras operacionais para agentes e LLMs
 ├── MIGRATION_RECIPE_FOR_AGENTS.md # Symlink para docs/migration-recipe-for-agents.md
 ├── pyproject.toml                 # Metadados e configurações (Ruff, Pytest)

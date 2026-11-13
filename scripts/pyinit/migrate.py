@@ -241,6 +241,93 @@ def static_setup(raw: bytes) -> dict:
         ) from None
 
 
+# Pacotes Conda com equivalencia revisada no PyPI: nome Conda -> nome PyPI.
+# Para ampliar a lista, acrescente pares aqui; em um projeto especifico, use
+# o arquivo .pyinit-conda.toml (tabela [packages]) sem alterar o gerador.
+CONDA_PYPI = {
+    "numpy": "numpy",
+    "pandas": "pandas",
+    "scipy": "scipy",
+    "scikit-learn": "scikit-learn",
+    "matplotlib": "matplotlib",
+    "seaborn": "seaborn",
+    "jupyter": "jupyter",
+    "jupyterlab": "jupyterlab",
+    "notebook": "notebook",
+    "ipykernel": "ipykernel",
+    "ipython": "ipython",
+    "pytest": "pytest",
+    "pytest-cov": "pytest-cov",
+    "ruff": "ruff",
+    "requests": "requests",
+    "httpx": "httpx",
+    "flask": "flask",
+    "fastapi": "fastapi",
+    "pydantic": "pydantic",
+    "polars": "polars",
+    "duckdb": "duckdb",
+    "pyarrow": "pyarrow",
+    "pillow": "pillow",
+    "beautifulsoup4": "beautifulsoup4",
+    "lxml": "lxml",
+    "tqdm": "tqdm",
+    "click": "click",
+    "typer": "typer",
+    "rich": "rich",
+    "sympy": "sympy",
+    "statsmodels": "statsmodels",
+    "sqlalchemy": "sqlalchemy",
+    "lightgbm": "lightgbm",
+    "xgboost": "xgboost",
+    "openpyxl": "openpyxl",
+    "plotly": "plotly",
+    "bokeh": "bokeh",
+    "dask": "dask",
+    "nltk": "nltk",
+    "spacy": "spacy",
+    "pyspark": "pyspark",
+    "joblib": "joblib",
+    "pyyaml": "pyyaml",
+    "python-dotenv": "python-dotenv",
+    "setuptools": "setuptools",
+    "wheel": "wheel",
+    # Nomes que diferem entre conda-forge/defaults e PyPI.
+    "pytorch": "torch",
+    "matplotlib-base": "matplotlib",
+    "seaborn-base": "seaborn",
+    "py-xgboost": "xgboost",
+    "dask-core": "dask",
+    "pytables": "tables",
+    "python-graphviz": "graphviz",
+    "msgpack-python": "msgpack",
+}
+CONDA_MAP_FILE = ".pyinit-conda.toml"
+PACKAGE_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+
+
+def conda_equivalents(raw: bytes | None) -> dict[str, str]:
+    """Une a lista embutida as equivalencias revisadas declaradas no projeto."""
+    packages = dict(CONDA_PYPI)
+    if raw is None:
+        return packages
+    data = tomllib.loads(raw.decode())
+    extra = data.get("packages", {})
+    require(
+        set(data) <= {"packages"}
+        and isinstance(extra, dict)
+        and all(
+            isinstance(v, str)
+            and re.fullmatch(PACKAGE_NAME, k)
+            and re.fullmatch(PACKAGE_NAME, v)
+            for k, v in extra.items()
+        ),
+        f"{CONDA_MAP_FILE} deve conter somente [packages] com "
+        'pares nome-conda = "nome-pypi".',
+    )
+    packages.update(extra)
+    return packages
+
+
 def plan_migration(
     project: Path, python: str
 ) -> tuple[dict, dict[str, bytes | None], bytes | None]:
@@ -308,6 +395,7 @@ def plan_migration(
         "requirements-dev.in",
         "requirements-dev.txt",
         "dev-requirements.txt",
+        CONDA_MAP_FILE,
     ]
     for name in names:
         read(name)
@@ -677,52 +765,12 @@ def plan_migration(
         )
         section = ""
         pip_indent = None
-        packages = {
-            "numpy",
-            "pandas",
-            "scipy",
-            "scikit-learn",
-            "matplotlib",
-            "seaborn",
-            "jupyter",
-            "jupyterlab",
-            "notebook",
-            "ipykernel",
-            "ipython",
-            "pytest",
-            "pytest-cov",
-            "ruff",
-            "requests",
-            "httpx",
-            "flask",
-            "fastapi",
-            "pydantic",
-            "polars",
-            "duckdb",
-            "pyarrow",
-            "pillow",
-            "beautifulsoup4",
-            "lxml",
-            "tqdm",
-            "click",
-            "typer",
-            "rich",
-            "sympy",
-            "statsmodels",
-            "sqlalchemy",
-            "lightgbm",
-            "xgboost",
-            "openpyxl",
-            "plotly",
-            "bokeh",
-            "dask",
-            "nltk",
-            "spacy",
-            "pyspark",
-            "joblib",
-            "pyyaml",
-            "python-dotenv",
-        }
+        packages = conda_equivalents(read(CONDA_MAP_FILE))
+        if originals[CONDA_MAP_FILE] is not None:
+            warnings.append(
+                f"Equivalencias Conda adicionais lidas de {CONDA_MAP_FILE}; "
+                "a revisao desses pares e responsabilidade do projeto."
+            )
         for line in raw.decode().splitlines():
             clean = re.split(r"\s+#", line.strip(), maxsplit=1)[0].strip()
             if not clean or clean.startswith("#"):
@@ -772,10 +820,11 @@ def plan_migration(
                 requires = spec
             elif name != "pip":
                 require(
-                    name in packages or name in ("setuptools", "wheel"),
-                    f"Pacote Conda sem equivalencia revisada no PyPI: {name}",
+                    name in packages,
+                    f"Pacote Conda sem equivalencia revisada no PyPI: {name}; "
+                    f"apos revisar, declare-a em {CONDA_MAP_FILE}",
                 )
-                deps.append(name + version_constraint(spec))
+                deps.append(packages[name] + version_constraint(spec))
         require(section or deps, "Manifesto Conda vazio.")
         warnings.append(
             "Canais/builds Conda nao sao transportados para PyPI; "
